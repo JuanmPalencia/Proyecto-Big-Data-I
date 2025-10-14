@@ -1,0 +1,42 @@
+SPRINT 1 — DEFINICIÓN ESTRATÉGICA Y ARRANQUE OPERATIVO
+
+OBJETIVO:
+Establecer las bases conceptuales, técnicas y visuales del proyecto GTP, garantizando coherencia con las políticas europeas y preparando el flujo inicial de datos.
+
+------------------------------------------------------------
+
+TAREAS PRINCIPALES:
+
+1. Definir criterios EKC (Curva de Kuznets Ambiental) y variables clave:
+   - PIB per cápita, CO₂, PM2.5, NDVI, TCD, impermeabilización, densidad urbana, indicadores de empleo y estructura productiva.
+   → Resultado esperado: esquema de variables con sus fuentes, periodicidad y unidad de análisis (país/FUA).
+
+2. Seleccionar fuentes oficiales:
+   - Copernicus (Land, HRL, Urban Atlas), Eurostat, EEA y OECD.
+   → Resultado esperado: inventario documentado con enlaces, licencias y formato de acceso (API, descarga directa, etc.).
+
+3. Revisar alineación con políticas y límites de actuación UE:
+   - Analizar hasta qué punto el proyecto puede integrarse o apoyarse en políticas como el European Green Deal, NextGenerationEU, Agenda 2030, Misión 100 Ciudades Climáticamente Neutras y los fondos LIFE/FEDER.
+   → Resultado esperado: resumen orientativo que marque los márgenes de acción y oportunidades reales de financiación o cooperación institucional.
+
+4. Diseñar la estructura macro del proyecto:
+   - Crear los primeros diagramas de flujo y arquitectura general (conceptual, técnica y visual):
+       • Flujo general del sistema: de los datos satelitales a los indicadores y visualización final.
+       • Estructura web: cómo se mostrará el índice GTP, los mapas, dashboards y fichas por ciudad.
+       • Visualización inicial del “ecosistema GTP” (plataforma + datos + indicadores + usuario final).
+   → Resultado esperado: conjunto de diagramas (conceptual, sistema, navegación, base de datos preliminar).
+
+5. Iniciar el proceso ETL (extracción–transformación–carga):
+   - Configurar accesos API de Copernicus y EEA.
+   - Automatizar la descarga de datasets iniciales (Urban Atlas, TCD, SWF, PIB, PM2.5).
+   - Normalizar variables (unidades, coordenadas, nombres de campo).
+   - Guardar datos en estructura organizada (raw → processed).
+   → Resultado esperado: primera base unificada y trazable para análisis posteriores.
+
+------------------------------------------------------------
+
+ENTREGABLES SPRINT 1:
+- Documento metodológico y mapa de fuentes oficiales.
+- Primeros diagramas conceptuales y de sistema.
+- Repositorio de datos con estructura ETL inicial.
+- Documento de alineación con políticas UE y límites de acción.
