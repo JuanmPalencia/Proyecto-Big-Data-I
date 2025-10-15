@@ -3,7 +3,7 @@ import requests
 import pandas as pd
 import geopandas as gpd
 from shapely.geometry import shape
-
+import os
 copernicus_user = os.getenv("GPT.Uem@gmail.com") # copernicus User
 copernicus_password = os.getenv("@GPTUem12345") # copernicus Password
 ft = "POLYGON((0 0, 0 1, 1 1, 1 0, 0 0))"  # WKT Representation of BBOX
