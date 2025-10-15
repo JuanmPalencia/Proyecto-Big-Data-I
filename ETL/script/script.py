@@ -50,6 +50,7 @@ pwd = os.getenv("COPERNICUS_PASSWORD")
 BASE = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
 TOKEN_URL = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
 
+
 # =========================
 # Utilidades generales
 # =========================
