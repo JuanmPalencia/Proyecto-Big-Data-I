@@ -1,37 +1,45 @@
 SPRINT 1 — DEFINICIÓN ESTRATÉGICA Y ARRANQUE OPERATIVO
 
 OBJETIVO:
-Establecer las bases conceptuales, técnicas y visuales del proyecto GTP, garantizando coherencia con las políticas europeas y preparando el flujo inicial de datos.
+Establecer los criterios conceptuales, econométricos y geoespaciales del estudio de la Curva de Kuznets Ambiental (EKC) a escala europea, definiendo las variables base, las fuentes de datos y el flujo ETL inicial dentro de un entorno reproducible (Docker), garantizando trazabilidad y coherencia para los análisis posteriores del proyecto GTP.
 
 ------------------------------------------------------------
 
 TAREAS PRINCIPALES:
 
-1. Definir criterios EKC (Curva de Kuznets Ambiental) y variables clave:
-   - PIB per cápita, CO₂, PM2.5, NDVI, TCD, impermeabilización, densidad urbana, indicadores de empleo y estructura productiva.
-   → Resultado esperado: esquema de variables con sus fuentes, periodicidad y unidad de análisis (país/FUA).
+1. Definir criterios EKC (Curva de Kuznets Ambiental) y variables:
+   - Identificar las variables determinantes para el análisis econométrico de la EKC y la detección de FUAs “justo por debajo del turning         point”.
+   - Económicas: PIB per cápita (PPP y nominal), estructura sectorial, empleo.
+   - Ambientales: emisiones de CO₂, concentraciones de PM2.5, NDVI, Tree Cover Density (TCD), porcentaje de superficie impermeabilizada.
+   - Urbanas y sociales: densidad urbana, acceso a espacio verde, índice de innovación, pobreza.
+   - Determinar la unidad de análisis: país y Functional Urban Areas (FUAs) según delimitación Copernicus/Urban Atlas.
+   - Documentar periodicidad, unidades y cobertura temporal de cada variable.
+   → Resultado esperado: esquema de variables normalizadas con metadatos completos (fuente, año, resolución, método de acceso).
 
 2. Seleccionar fuentes oficiales:
-   - Copernicus (Land, HRL, Urban Atlas), Eurostat, EEA y OECD.
-   → Resultado esperado: inventario documentado con enlaces, licencias y formato de acceso (API, descarga directa, etc.).
+   - Copernicus / CLMS: Urban Atlas, HRL (TCD y SWF), Sentinel-2 time series.
+   - EEA (European Environment Agency): concentraciones de PM2.5 y emisiones CO₂.
+   → Resultado esperado: inventario exhaustivo y documentado de fuentes de datos oficiales, con rutas de acceso validadas.
+   Eurostat / OECD: PIB per cápita, empleo, densidad, innovación.
+   → Resultado esperado: inventario documentado con enlaces y formato de acceso (API, descarga directa, etc.).
 
 3. Revisar alineación con políticas y límites de actuación UE:
-   - Analizar hasta qué punto el proyecto puede integrarse o apoyarse en políticas como el European Green Deal, NextGenerationEU, Agenda 2030, Misión 100 Ciudades Climáticamente Neutras y los fondos LIFE/FEDER.
-   → Resultado esperado: resumen orientativo que marque los márgenes de acción y oportunidades reales de financiación o cooperación institucional.
+   - Analizar hasta qué punto el proyecto puede integrarse o apoyarse en políticas como el European Green Deal.
+   → Resultado esperado: resumen orientativo que marque los márgenes de acción y oportunidades reales de financiación.
 
-4. Diseñar la estructura macro del proyecto:
+4. Diseñar la macroestructura del proyecto:
    - Crear los primeros diagramas de flujo y arquitectura general (conceptual, técnica y visual):
-       • Flujo general del sistema: de los datos satelitales a los indicadores y visualización final.
-       • Estructura web: cómo se mostrará el índice GTP, los mapas, dashboards y fichas por ciudad.
-       • Visualización inicial del “ecosistema GTP” (plataforma + datos + indicadores + usuario final).
+   - Flujo general del sistema: de los datos satelitales a los indicadores y visualización final.
+   - Estructura web: cómo se mostrará el índice GTP, los mapas, dashboards y fichas por ciudad.
+   - Visualización inicial del “ecosistema GTP” (plataforma + datos + indicadores + usuario final).
    → Resultado esperado: conjunto de diagramas (conceptual, sistema, navegación, base de datos preliminar).
 
 5. Iniciar el proceso ETL (extracción–transformación–carga):
    - Configurar accesos API de Copernicus y EEA.
    - Automatizar la descarga de datasets iniciales (Urban Atlas, TCD, SWF, PIB, PM2.5).
    - Normalizar variables (unidades, coordenadas, nombres de campo).
-   - Guardar datos en estructura organizada (raw → processed).
-   → Resultado esperado: primera base unificada y trazable para análisis posteriores.
+   - Implementar contenedores Docker para garantizar la reproducibilidad del entorno ETL y el almacenamiento estructurado de los datos.         - Guardar datos en estructura organizada (raw → processed).
+   → Resultado esperado: primera base unificada y trazable en un entorno dockerizado para análisis posteriores.
 
 ------------------------------------------------------------
 
