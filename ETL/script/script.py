@@ -74,4 +74,4 @@ if p.shape[0] > 0 :
             except:
                 print("problem with server")
 else :
-    print('no data found')
+    print('no data found') rrt
