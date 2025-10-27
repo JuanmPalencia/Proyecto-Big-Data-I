@@ -25,10 +25,14 @@ data/cache/
 data/**/*.parquet
 data/**/*.jsonl
 
-# No ignorar CSV, JPG2 y ZIP
+#ignorar CSV, JPG2 y ZIP
 *.csv
 *..jp2
 *.zip
+*.zip
+*.jp2
+*.png
+
 
 # Ignorar backups y outputs grandes
 *.bak
