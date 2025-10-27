@@ -1,4 +1,51 @@
-requests
-pandas
-geopandas
-shapely
+# -----------------------------
+# Núcleo general
+# -----------------------------
+python-dotenv==1.0.1
+requests==2.32.3
+urllib3==2.2.2
+pandas==2.2.3
+numpy==1.26.4
+tqdm==4.66.4
+lxml==5.2.2
+beautifulsoup4==4.12.3
+pathlib==1.0.1
+python-dateutil==2.9.0.post0
+
+# -----------------------------
+# Geo / Copernicus / Sentinel / HRL
+# -----------------------------
+geopandas==1.0.1
+shapely==2.0.6
+rasterio==1.4.1
+pyproj==3.6.1
+sentinelsat==1.2.1
+owslib==0.29.3
+requests-cache==1.2.1
+
+# -----------------------------
+# Control de errores / reintentos
+# -----------------------------
+backoff==2.2.1
+tenacity==9.0.0
+
+# -----------------------------
+# Manejo de archivos y compresión
+# -----------------------------
+zipfile36==0.1.3
+rarfile==4.1
+
+# -----------------------------
+# Async / API / Validación avanzada
+# -----------------------------
+aiohttp==3.10.5
+httpx==0.27.2
+pydantic==2.9.2
+xmltodict==0.14.2
+json5==0.9.25
+
+# -----------------------------
+# Logging / CLI / depuración
+# -----------------------------
+rich==13.7.1
+colorama==0.4.6
