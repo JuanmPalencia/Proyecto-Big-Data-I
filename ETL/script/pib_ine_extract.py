@@ -4,6 +4,16 @@
 import requests
 import pandas as pd
 import re
+import os
+from datetime import datetime
+
+
+BASE_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..")
+)
+
+DATA_DIR = os.path.join(BASE_DIR, "data", "ine")
+os.makedirs(DATA_DIR, exist_ok=True)
 
 def obtener_datos_pib():
     """
@@ -100,9 +110,15 @@ def main():
     print("\n📊 Últimos datos del PIB:")
     print(df_pib.tail(8))
 
-    # Guardar en CSV con codificación UTF-8
-    df_pib.to_csv("pib_ine.csv", index=False, encoding="utf-8")
-    print("\n✅ Datos guardados en 'pib_ine.csv'")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    csv_path = os.path.join(DATA_DIR, f"pib_ine_{timestamp}.csv")
+    excel_path = os.path.join(DATA_DIR, f"pib_ine_{timestamp}.xlsx")
+
+    df_pib.to_csv(csv_path, index=False, encoding="utf-8")
+    df_pib.to_excel(excel_path, index=False)
+
+    print(f"✅ Datos guardados en:\n  {csv_path}\n  {excel_path}")
+
 
 
 
