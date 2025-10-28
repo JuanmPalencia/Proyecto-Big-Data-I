@@ -22,13 +22,14 @@ Variables de entorno (Docker/CI):
 from __future__ import annotations
 import os, re, time, argparse, csv, math, sys
 import requests
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 from urllib.parse import urljoin
 from pathlib import Path
 from typing import List, Dict, Optional
 from bs4 import BeautifulSoup
 import pdfplumber
 import pandas as pd
+import yfinance as yf
 
 # ---------------- Config ---------------- #
 
@@ -221,12 +222,63 @@ def extract_final_recipients_from_pdf(pdf_url: str) -> pd.DataFrame:
     df["extraction_date"] = datetime.now(UTC).strftime("%Y-%m-%d")
     return df
 
+# ---------------- C) Datos financieros 2018 ---------------- #
+
+def extract_financial_data_2018(tickers: List[str], out_dir: Path) -> pd.DataFrame:
+    """
+    Extrae estadísticas financieras clave (capitalización, ROI, ROE, volatilidad)
+    para el año 2018 desde Yahoo Finance.
+    """
+    print(" Extrayendo datos financieros para 2018…")
+    records = []
+
+    for t in tickers:
+        try:
+            ticker = yf.Ticker(t)
+            info = ticker.info
+
+            # Histórico 2018 (para volatilidad y precios promedio)
+            hist = ticker.history(start="2018-01-01", end="2018-12-31")
+            if hist.empty:
+                continue
+
+            # Volatilidad anualizada (desviación estándar diaria * sqrt(252))
+            vol = hist["Close"].pct_change().std() * (252 ** 0.5)
+
+            record = {
+                "Ticker": t,
+                "Company": info.get("shortName"),
+                "Sector": info.get("sector"),
+                "MarketCap": info.get("marketCap"),
+                "ROE": info.get("returnOnEquity"),
+                "ROI": info.get("returnOnInvestment"),
+                "Volatility_2018": vol,
+                "Country": info.get("country"),
+                "Extraction_Year": 2018,
+                "Extraction_Date": datetime.now(UTC).strftime("%Y-%m-%d"),
+            }
+            records.append(record)
+            print(f"   • {t}: {info.get('shortName')} — OK")
+            time.sleep(2)  # pausa ligera
+        except Exception as e:
+            print(f"Error en {t}: {e}")
+            continue
+
+    df_fin = pd.DataFrame(records)
+    if not df_fin.empty:
+        p = out_dir / "financial_data_2018.csv"
+        df_fin.to_csv(p, index=False, encoding="utf-8")
+        print(f"financial_data_2018.csv -> {p} ({len(df_fin):,} filas)")
+    else:
+        print(" No se extrajeron datos financieros (revisa tickers o conexión).")
+    return df_fin
+
 # ---------------- Main ---------------- #
 
 def main():
-    ap = argparse.ArgumentParser(description="InvestEU ETL (GTP) — operaciones y beneficiarios")
-    ap.add_argument("--what", default="all", choices=["all", "list", "recipients"],
-                    help="Qué extraer: list (operaciones), recipients (beneficiarios PDF) o all")
+    ap = argparse.ArgumentParser(description="InvestEU ETL (GTP) — operaciones, beneficiarios y datos financieros")
+    ap.add_argument("--what", default="all", choices=["all", "list", "recipients", "finance"],
+                    help="Qué extraer: list (operaciones), recipients (beneficiarios PDF), finance o all")
     ap.add_argument("--years", default="", help="Años objetivo p/ recipients (informativo si pasas PDFs explícitos)")
     ap.add_argument("--out-dir", default=str(OUT_DIR), help="Carpeta salida")
     args = ap.parse_args()
@@ -281,6 +333,18 @@ def main():
             p = out / f"final_recipients{year_hint}.csv"
             df_all.to_csv(p, index=False, encoding="utf-8")
             print(f"✅ final_recipients{year_hint}.csv -> {p} ({len(df_all):,} filas)")
+    
+    if args.what in ("all", "finance"):
+        # Ejemplo: principales compañías energéticas europeas
+        tickers_energy_eu = [
+            "RDSA.L",   # Shell (UK)
+            "BP.L",     # BP (UK)
+            "ENI.MI",   # ENI (Italia)
+            "TOTF.PA",  # TotalEnergies (Francia)
+            "IBE.MC",   # Iberdrola (España)
+            "ORA.PA",   # Orange Energy / proxy
+        ]
+        extract_financial_data_2018(tickers_energy_eu, out)
 
     print(f"\n🕒 Fin: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
 
