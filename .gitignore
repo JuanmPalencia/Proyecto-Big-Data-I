@@ -32,6 +32,8 @@ data/**/*.jsonl
 *.zip
 *.jp2
 *.png
+    *.xlsx
+    *.xlsm
 
 
 # Ignorar backups y outputs grandes
