@@ -2,3 +2,4 @@ pandas
 requests 
 matplotlib
 openpyxl
+numpy
