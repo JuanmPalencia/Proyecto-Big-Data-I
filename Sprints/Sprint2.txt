@@ -1,9 +1,3 @@
-<<<<<<< Updated upstream
-SPRINT 2 — Dockerización e integración de la base de datos y entorno web
-
-OBJETIVO:
-Dockerizar los pipelines ETL del proyecto GTP e integrar la base de datos relacional dentro de un entorno automatizado, trazable y reproducible. Diseñar la arquitectura conceptual y técnica de la base de datos, junto con la primera interfaz HTML de la plataforma web, garantizando eficiencia en la gestión y visualización de los datos financieros, económicos y ambientales.
-=======
 SPRINT 2 — Dockerización, limpieza e integración de la base de datos y entorno web
 
 OBJETIVO:
@@ -13,32 +7,12 @@ y normalización de datos provenientes de las fuentes como Copernicus y Eurostat
 consistencia y calidad de los mismos. Diseñar la arquitectura conceptual y técnica de la base 
 de datos junto con la primera interfaz HTML del portal GTP, buscando eficiencia en la gestión 
 y visualización de los datos financieros, económicos y ambientales.
->>>>>>> Stashed changes
 
 ------------------------------------------------------------
 
 TAREAS PRINCIPALES:
 
 1. Dockerización del flujo ETL:
-<<<<<<< Updated upstream
-- Crear Dockerfile y docker-compose.yml que automaticen la ejecución de todos los pipelines ETL por fuente (Eurostat, Copernicus, EEA, Yahoo Finance, etc.).
-- Configurar contenedores independientes para:
-- Extracción y transformación (Python)
-- Almacenamiento de datos (PostgreSQL / PostGIS)
-- Interfaz web básica (Flask / FastAPI con HTML inicial)
-- Definir volúmenes persistentes para preservar datos y logs entre ejecuciones.
-- Implementar un sistema de control de duplicados, evitando la descarga y procesamiento de datasets ya integrados.
-→ Resultado esperado: entorno dockerizado modular y reproducible que ejecuta los ETL con un solo comando (docker-compose up).
-
-2. Diseño conceptual y técnico de la base de datos:
-- Definir el modelo entidad–relación (ER) que integre las dimensiones económica, ambiental, urbana y financiera.
-- Estandarizar campos clave (ISO country codes, FUA IDs, timestamps, unidad de medida).
-- Diseñar una estructura escalable (esquemas raw, processed, analytics) compatible con consultas espaciales.
-- Implementar la integración de CSV procesados desde LORCA.
-→ Resultado esperado: base de datos relacional operativa y documentada, lista para alimentar dashboards y visualizaciones.
-
-3. Interfaz inicial del sistema web:
-=======
 - Crear Dockerfile y docker-compose.yml que automaticen la ejecución de todos los pipelines ETL 
 por fuente (Eurostat, Copernicus, EEA, Yahoo Finance, etc.).
 - Configurar contenedores independientes para:
@@ -72,7 +46,6 @@ y financiera.
 dashboards y visualizaciones.
 
 4. Interfaz inicial del sistema web:
->>>>>>> Stashed changes
 - Desarrollar la página de inicio HTML con estructura básica del portal GTP: menú principal, login, newsletter y acceso a dashboards.
 - Integrar comunicación inicial con la base de datos.
 - Diseñar la arquitectura de navegación entre módulos (mapa interactivo, dashboard energético, ficha país y pronósticos).
@@ -84,9 +57,6 @@ ENTREGABLES SPRINT 2:
 
 Contenedores Docker funcionales (ETL, BDD y web).
 Archivos Dockerfile y docker-compose.yml documentados.
-<<<<<<< Updated upstream
-=======
 Datasets limpios y normalizados tras la validación.
->>>>>>> Stashed changes
 Diseño conceptual y técnico de la base de datos (modelo ER + esquema)
 Prototipo web inicial HTML.
