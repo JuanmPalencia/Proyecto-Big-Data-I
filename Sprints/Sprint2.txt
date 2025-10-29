@@ -1,13 +1,26 @@
+<<<<<<< Updated upstream
 SPRINT 2 — Dockerización e integración de la base de datos y entorno web
 
 OBJETIVO:
 Dockerizar los pipelines ETL del proyecto GTP e integrar la base de datos relacional dentro de un entorno automatizado, trazable y reproducible. Diseñar la arquitectura conceptual y técnica de la base de datos, junto con la primera interfaz HTML de la plataforma web, garantizando eficiencia en la gestión y visualización de los datos financieros, económicos y ambientales.
+=======
+SPRINT 2 — Dockerización, limpieza e integración de la base de datos y entorno web
+
+OBJETIVO:
+Dockerizar los pipelines ETL del proyecto GTP e integrar la base de datos relacional 
+dentro de un entorno trazable y reproducible. Llevar a cabo la limpieza, validación 
+y normalización de datos provenientes de las fuentes como Copernicus y Eurostat, garantizando 
+consistencia y calidad de los mismos. Diseñar la arquitectura conceptual y técnica de la base 
+de datos junto con la primera interfaz HTML del portal GTP, buscando eficiencia en la gestión 
+y visualización de los datos financieros, económicos y ambientales.
+>>>>>>> Stashed changes
 
 ------------------------------------------------------------
 
 TAREAS PRINCIPALES:
 
 1. Dockerización del flujo ETL:
+<<<<<<< Updated upstream
 - Crear Dockerfile y docker-compose.yml que automaticen la ejecución de todos los pipelines ETL por fuente (Eurostat, Copernicus, EEA, Yahoo Finance, etc.).
 - Configurar contenedores independientes para:
 - Extracción y transformación (Python)
@@ -25,6 +38,41 @@ TAREAS PRINCIPALES:
 → Resultado esperado: base de datos relacional operativa y documentada, lista para alimentar dashboards y visualizaciones.
 
 3. Interfaz inicial del sistema web:
+=======
+- Crear Dockerfile y docker-compose.yml que automaticen la ejecución de todos los pipelines ETL 
+por fuente (Eurostat, Copernicus, EEA, Yahoo Finance, etc.).
+- Configurar contenedores independientes para:
+- Extracción y transformación
+- Almacenamiento de datos
+- Interfaz web básica
+- Definir volúmenes persistentes para preservar datos y logs entre ejecuciones.
+- Implementar un sistema de control de duplicados, evitando la descarga y procesamiento de datasets 
+ya integrados.
+→ Resultado esperado: entorno dockerizado modular y reproducible que ejecuta los ETL con un solo 
+comando (docker-compose up).
+
+2. Limpieza y validación de datos (Copernicus, Eurostat, EEA):
+- Incorporar una etapa específica de depuración y estandarización posterior a la extracción:
+- Eliminación de duplicados, valores nulos y outliers en indicadores satelitales (NDVI, TCD, 
+PM2.5, etc.).
+- Homogeneización de unidades.
+- Verificación de coordenadas con límites de FUAs y países.
+- Documentar métricas de calidad de datos (porcentaje de valores válidos, cobertura temporal, 
+consistencia geográfica).
+→ Resultado esperado: datasets limpios, coherentes y normalizados, listos para su integración 
+en la base de datos relacional.
+
+3. Diseño conceptual y técnico de la base de datos:
+- Definir el modelo entidad–relación (ER) que integre las dimensiones económica, ambiental, urbana 
+y financiera.
+- Estandarizar campos clave (ISO country codes, FUA IDs, timestamps, unidad de medida).
+- Diseñar una estructura escalable (esquemas raw, processed, analytics) compatible con consultas espaciales.
+- Implementar la integración de CSV procesados desde LORCA.
+→ Resultado esperado: base de datos relacional operativa y documentada, lista para alimentar 
+dashboards y visualizaciones.
+
+4. Interfaz inicial del sistema web:
+>>>>>>> Stashed changes
 - Desarrollar la página de inicio HTML con estructura básica del portal GTP: menú principal, login, newsletter y acceso a dashboards.
 - Integrar comunicación inicial con la base de datos.
 - Diseñar la arquitectura de navegación entre módulos (mapa interactivo, dashboard energético, ficha país y pronósticos).
@@ -36,5 +84,9 @@ ENTREGABLES SPRINT 2:
 
 Contenedores Docker funcionales (ETL, BDD y web).
 Archivos Dockerfile y docker-compose.yml documentados.
+<<<<<<< Updated upstream
+=======
+Datasets limpios y normalizados tras la validación.
+>>>>>>> Stashed changes
 Diseño conceptual y técnico de la base de datos (modelo ER + esquema)
 Prototipo web inicial HTML.
