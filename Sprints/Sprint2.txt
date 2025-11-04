@@ -25,17 +25,6 @@ ya integrados.
 → Resultado esperado: entorno dockerizado modular y reproducible que ejecuta los ETL con un solo 
 comando (docker-compose up).
 
-2. Limpieza y validación de datos (Copernicus, Eurostat, EEA):
-- Incorporar una etapa específica de depuración y estandarización posterior a la extracción:
-- Eliminación de duplicados, valores nulos y outliers en indicadores satelitales (NDVI, TCD, 
-PM2.5, etc.).
-- Homogeneización de unidades.
-- Verificación de coordenadas con límites de FUAs y países.
-- Documentar métricas de calidad de datos (porcentaje de valores válidos, cobertura temporal, 
-consistencia geográfica).
-→ Resultado esperado: datasets limpios, coherentes y normalizados, listos para su integración 
-en la base de datos relacional.
-
 3. Diseño conceptual y técnico de la base de datos:
 - Definir el modelo entidad–relación (ER) que integre las dimensiones económica, ambiental, urbana 
 y financiera.
