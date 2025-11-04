@@ -25,7 +25,7 @@ ya integrados.
 → Resultado esperado: entorno dockerizado modular y reproducible que ejecuta los ETL con un solo 
 comando (docker-compose up).
 
-3. Diseño conceptual y técnico de la base de datos:
+2. Diseño conceptual y técnico de la base de datos:
 - Definir el modelo entidad–relación (ER) que integre las dimensiones económica, ambiental, urbana 
 y financiera.
 - Estandarizar campos clave (ISO country codes, FUA IDs, timestamps, unidad de medida).
@@ -34,7 +34,7 @@ y financiera.
 → Resultado esperado: base de datos relacional operativa y documentada, lista para alimentar 
 dashboards y visualizaciones.
 
-4. Interfaz inicial del sistema web:
+3. Interfaz inicial del sistema web:
 - Desarrollar la página de inicio HTML con estructura básica del portal GTP: menú principal, login, newsletter y acceso a dashboards.
 - Integrar comunicación inicial con la base de datos.
 - Diseñar la arquitectura de navegación entre módulos (mapa interactivo, dashboard energético, ficha país y pronósticos).
@@ -46,6 +46,5 @@ ENTREGABLES SPRINT 2:
 
 Contenedores Docker funcionales (ETL, BDD y web).
 Archivos Dockerfile y docker-compose.yml documentados.
-Datasets limpios y normalizados tras la validación.
 Diseño conceptual y técnico de la base de datos (modelo ER + esquema)
 Prototipo web inicial HTML.
