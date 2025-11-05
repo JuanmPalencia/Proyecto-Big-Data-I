@@ -80,10 +80,7 @@ DATA_URLS: Dict[str, str] = {
         f"{BASE}/OECD.ENV.EPI,DSD_EPEA@DF_EPEA,1.0/"
         ".A.NEEP...S1._T?startPeriod={start}&endPeriod={end}&dimensionAtObservation=AllDimensions"
     ),
-    "egss": (
-        f"{BASE}/OECD.ENV.EGSS,DSD_EGSS@DF_EGSS,1.0/"
-        "all?startPeriod={start}&endPeriod={end}&dimensionAtObservation=AllDimensions"
-    ),
+    
     # "circular":  # añadir cuando el flow estable esté publicado.
 
     # 👩‍🔬 I+D, patentes, VC
@@ -109,10 +106,6 @@ DATA_URLS: Dict[str, str] = {
         f"{BASE}/OECD.SDD.NAD,DSD_NAAG@DF_NAAG_I,1.0/"
         "A.AUS+AUT+BEL+CAN+CHL+COL+CRI+CZE+DNK+EST+FIN+FRA+DEU+GRC+HUN+ISL+IRL+ISR+ITA+JPN+KOR+LVA+LTU+LUX+MEX+NLD+NZL+NOR+POL+PRT+SVK+SVN+ESP+SWE+CHE+TUR+GBR+USA.B1GQ_R_GR.."
         "?startPeriod={start}&endPeriod={end}&dimensionAtObservation=AllDimensions"
-    ),
-    "emp_by_ind": (
-        f"{BASE}/OECD.SDD.STANI4,DSD_STANI4@DF_EMPLOYMENT,1.0/"
-        "all?startPeriod={start}&endPeriod={end}&dimensionAtObservation=AllDimensions"
     ),
     "productivity": (
         f"{BASE}/OECD.SDD.TPS,DSD_PDB@DF_PDB_ISIC4_I4,1.0/"

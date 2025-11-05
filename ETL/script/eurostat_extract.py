@@ -4,6 +4,7 @@ Eurostat ETL — Green Turning Point (GTP)
 Guarda CSVs en: data/raw/eurostat/
 
 Uso ejemplos:
+  py ETL/script/eurostat_extract.py --datasets all
   py ETL/script/eurostat_extract.py --datasets all --filters "time=2010:2024&geo=ES,PT,FR"
   py ETL/script/eurostat_extract.py --datasets gdp_per_capita,ghg_emissions --filters "time=2015:2024"
   # Grupos nuevos (se guardan como nombre__part1.csv, part2.csv, ...)
