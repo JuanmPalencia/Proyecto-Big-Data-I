@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+  etl:
+    build: .
+    container_name: proyecto-big-data-etl
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data           # Guarda los datos en tu PC
+      - ./logs:/app/logs           # Guarda los logs en tu PC
+    environment:
+      INVESTEU_BASE_SLEEP: 300
+      INVESTEU_429_PENALTIES: 300,600,1200
+      INVESTEU_TIMEOUT: 90
+      INVESTEU_MAX_RETRIES: 3
+    restart: "no"
