@@ -262,6 +262,14 @@ def main():
     load_dotenv()
     args = parse_args()
 
+    DATA_DIR = os.path.join(os.getcwd(), "data", "s2")
+    os.makedirs(DATA_DIR, exist_ok=True)
+    args.out_dir = DATA_DIR
+    args.csv = os.path.join(DATA_DIR, os.path.basename(args.csv))
+    
+
+
+
     # AOI
     if args.aoi == "custom":
         if not args.wkt:

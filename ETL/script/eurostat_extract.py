@@ -283,6 +283,23 @@ def main():
                     help="Fusiona las partes de cada grupo en un único CSV (nombre.csv)")
     args = ap.parse_args()
 
+
+
+
+# -------------------- Ajuste Docker / Rutas seguras -------------------- #
+    BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    DATA_DIR = os.path.join(BASE_DIR, "data", "eurostat")
+    if not args.out_dir or args.out_dir == DEFAULT_OUT:
+        args.out_dir = DATA_DIR
+    os.makedirs(args.out_dir, exist_ok=True)
+
+
+
+
+
+
+
+
     # Resolver selección
     if args.datasets.lower() == "all":
         # Mantén compatibilidad: descargamos todos los simples + todos los grupos

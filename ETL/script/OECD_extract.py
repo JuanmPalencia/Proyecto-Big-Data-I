@@ -25,9 +25,18 @@ from datetime import datetime, UTC
 from typing import Dict, List
 
 # -------------------- Config base --------------------
+# Detecta la ubicación real del script (tanto en local como en contenedor)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Carpeta de salida → /app/data/raw/oecd (en Docker) o ./data/raw/oecd (en local)
+OUT_DIR = os.path.join(BASE_DIR, "..", "..", "data", "raw", "oecd")
+os.makedirs(OUT_DIR, exist_ok=True)
+
+# ======================================================
+# CONFIGURACIÓN BASE OECD
+# ======================================================
 
 BASE = "https://sdmx.oecd.org/public/rest/data"
-OUT_DIR = os.path.join("data", "raw", "oecd")
 
 DEFAULT_START = os.getenv("OECD_START_YEAR", "2010")
 DEFAULT_END   = os.getenv("OECD_END_YEAR",   "2023")
