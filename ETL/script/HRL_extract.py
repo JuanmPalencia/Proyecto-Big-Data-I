@@ -115,6 +115,20 @@ if __name__ == "__main__":
     ap.add_argument("--size", type=int, default=1024)
     args = ap.parse_args()
 
+
+    # 🔧 --- BLOQUE NUEVO: ajustar rutas Docker-friendly ---
+    BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    DATA_DIR = os.path.join(BASE_DIR, "data", "hrl")
+    LOG_DIR = os.path.join(BASE_DIR, "logs")
+    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(LOG_DIR, exist_ok=True)
+
+
+
+
+
+
+
     try:
         file_path = download_layer(args.service, args.layer, args.bbox, args.size)
         log(f"📦 Proceso completado correctamente → {file_path}")

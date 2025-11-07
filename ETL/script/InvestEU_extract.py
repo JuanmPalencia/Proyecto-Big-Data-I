@@ -32,14 +32,37 @@ import pandas as pd
 
 # ---------------- Config ---------------- #
 
+BASE_DIR = Path(__file__).resolve().parents[2]  # sube hasta la raíz del proyecto (/app)
+DATA_DIR = BASE_DIR / "data" / "raw" / "investeu"
+LOG_DIR = BASE_DIR / "logs"
+
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+def log(msg: str):
+    """Escribe mensaje en consola y en log/etl_investeu.log"""
+    ts = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
+    line = f"{ts} {msg}"
+    print(line)
+    with open(LOG_DIR / "etl_investeu.log", "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
+
+
+
+
+
+
+
+
 LIST_URL = "https://investeu.europa.eu/investeu-operations/investeu-operations-list_en"
 # Este PDF cambia por año; por defecto incluimos 2024 (puedes añadir más por env)
 DEFAULT_RECIPIENT_PDFS = [
     "https://www.eib.org/attachments/general/lists/investeu-final-recipients-beneficiaries-en.pdf"
 ]
 
-OUT_DIR = Path("data/raw/investeu")
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+OUT_DIR = DATA_DIR  # forzamos salida a la carpeta Docker-friendly
 
 TIMEOUT = int(os.getenv("INVESTEU_TIMEOUT", "90"))
 MAX_RETRIES = int(os.getenv("INVESTEU_MAX_RETRIES", "3"))
