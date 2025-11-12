@@ -7,24 +7,24 @@ from datetime import datetime
 # ======================================================
 
 SCRIPTS = [
-    {"file": "pib_ine_extract.py", "args": []},
+    #{"file": "pib_ine_extract.py", "args": []},
     {"file": "eurostat_extract.py","args": ["--datasets", "all", "--eager-merge"]},
-    {"file": "OECD_extract.py","args": ["--pause", "300", "--penalty-429", "300,600,1200"]},
-    {"file": "InvestEU_extract.py","args": ["--what", "all"],"env": {"INVESTEU_BASE_SLEEP": "300",
-    "INVESTEU_429_PENALTIES": "300,600,1200","INVESTEU_TIMEOUT": "90","INVESTEU_MAX_RETRIES": "3"}},
-    {
-    "file": "HRL_extract.py",
-    "args": [
-        "--service", "tree_cover",
-        "--layer", "density",
-        "--bbox=-9.4,35.9,3.4,43.8"
-    ]
-    },
+    #{"file": "OECD_extract.py","args": ["--pause", "300", "--penalty-429", "300,600,1200"]},
+    #{"file": "InvestEU_extract.py","args": ["--what", "all"],"env": {"INVESTEU_BASE_SLEEP": "300",
+    #"INVESTEU_429_PENALTIES": "300,600,1200","INVESTEU_TIMEOUT": "90","INVESTEU_MAX_RETRIES": "3"}},
+    #{
+    #"file": "HRL_extract.py",
+    #"args": [
+    #    "--service", "tree_cover",
+    #    "--layer", "density",
+    #    "--bbox=-9.4,35.9,3.4,43.8"
+    #]
+    #},
 
 
 
 
-    {"file": "Sentinel-2_extract.py", "args": []},
+    #{"file": "Sentinel-2_extract.py", "args": []},
 ]
 
 # ======================================================
