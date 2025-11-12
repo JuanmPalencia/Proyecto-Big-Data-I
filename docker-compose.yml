@@ -4,6 +4,8 @@ services:
   etl:
     build: .
     container_name: proyecto-big-data-etl
+    mem_limit: 12g
+    cpus: 4
     env_file:
       - .env
     volumes:

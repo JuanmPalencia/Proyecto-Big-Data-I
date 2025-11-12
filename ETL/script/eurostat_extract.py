@@ -41,7 +41,7 @@ DATASETS = {
     # AMBIENTAL
     "ghg_emissions": "env_air_emis",
     "renewable_energy": "nrg_ind_ren",
-    "energy_consumption": "nrg_bal_c",
+    #"energy_consumption": "nrg_bal_c",
     "environmental_expenditure": "env_ac_exp2",
 
     # SOCIAL / I+D
