@@ -1,18 +1,51 @@
 version: "3.9"
 
+# docker-compose.yml (mínimo y seguro)
+
+x-common-env: &common-env
+  env_file:
+    - .env
+
 services:
   etl:
     build: .
     container_name: proyecto-big-data-etl
-    env_file:
-      - .env
+    <<: *common-env
     volumes:
-      - ./data:/app/data           # Guarda los datos en tu PC
-      - ./logs:/app/logs           # Guarda los logs en tu PC
-    environment:
-      INVESTEU_BASE_SLEEP: 300
-      INVESTEU_429_PENALTIES: 300,600,1200
-      INVESTEU_TIMEOUT: 90
-      INVESTEU_MAX_RETRIES: 3
+      - ./data:/app/data
+      - ./logs:/app/logs
     restart: "no"
+    profiles: [etl]
 
+  mysql:
+    image: mysql:8.0
+    container_name: proyecto-big-data-mysql
+    <<: *common-env
+    command: --default-authentication-plugin=mysql_native_password --log-error=/var/log/mysql/error.log
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+      - ./logs/mysql:/var/log/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    profiles: [db]
+
+  adminer:
+    image: adminer
+    container_name: proyecto-big-data-adminer
+    ports:
+      - "8080:8080"
+    depends_on:
+      - mysql
+    restart: unless-stopped
+    profiles: [db]
