@@ -3,6 +3,7 @@ import requests
 import argparse
 from urllib.parse import urlencode
 from datetime import datetime
+from hashlib import md5  # 🔹 NUEVO: para firmar la solicitud (deduplicado)
 
 # ======================================================
 # CONFIGURACIÓN GENERAL
@@ -59,6 +60,43 @@ HRL_ENDPOINTS = {
 # ======================================================
 # FUNCIÓN DE DESCARGA
 # ======================================================
+
+def _sig_path(out_file: str) -> str:
+    """Ruta del archivo de firma .sig junto al PNG."""
+    return out_file + ".sig"
+
+def _calc_request_signature(url: str, params: dict) -> str:
+    """
+    Firma determinística del pedido (URL + params) para evitar descargas repetidas.
+    No cambia nombres de archivos; solo guarda/verifica una .sig.
+    """
+    # Normaliza el orden de los parámetros para que la firma sea estable
+    qs = urlencode(sorted(params.items()), doseq=True)
+    data = f"{url}?{qs}".encode("utf-8")
+    return md5(data).hexdigest()
+
+def _already_downloaded(out_file: str, signature: str) -> bool:
+    """Devuelve True si existe el PNG y su .sig coincide con la firma del pedido."""
+    if not os.path.exists(out_file):
+        return False
+    sig_file = _sig_path(out_file)
+    if not os.path.exists(sig_file):
+        return False
+    try:
+        with open(sig_file, "r", encoding="utf-8") as f:
+            prev = f.read().strip()
+        return prev == signature
+    except Exception:
+        return False
+
+def _write_signature(out_file: str, signature: str) -> None:
+    """Escribe/actualiza la firma del pedido junto al PNG."""
+    try:
+        with open(_sig_path(out_file), "w", encoding="utf-8") as f:
+            f.write(signature)
+    except Exception as e:
+        log(f"⚠️ No se pudo escribir firma: {e}")
+
 def download_layer(service, layer, bbox, size=1024, crs="EPSG:3857"):
     if service not in HRL_ENDPOINTS:
         raise ValueError(f"Servicio '{service}' no reconocido.")
@@ -95,11 +133,20 @@ def download_layer(service, layer, bbox, size=1024, crs="EPSG:3857"):
             "size": f"{size},{size}"
         }
 
+    # 🔹 NUEVO: deduplicado por firma (mismo pedido → no descarga de nuevo)
+    signature = _calc_request_signature(url, params)
+    if _already_downloaded(out_file, signature):
+        log(f"⏭️  Omitido (ya descargado con misma solicitud) → {out_file}")
+        return out_file
+
     r = requests.get(url, params=params, timeout=180)
     r.raise_for_status()
 
     with open(out_file, "wb") as f:
         f.write(r.content)
+
+    # 🔹 NUEVO: guarda la firma asociada a este PNG
+    _write_signature(out_file, signature)
 
     log(f"✅ Guardado en {out_file}")
     return out_file
@@ -115,19 +162,12 @@ if __name__ == "__main__":
     ap.add_argument("--size", type=int, default=1024)
     args = ap.parse_args()
 
-
     # 🔧 --- BLOQUE NUEVO: ajustar rutas Docker-friendly ---
     BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     DATA_DIR = os.path.join(BASE_DIR, "data", "hrl")
     LOG_DIR = os.path.join(BASE_DIR, "logs")
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(LOG_DIR, exist_ok=True)
-
-
-
-
-
-
 
     try:
         file_path = download_layer(args.service, args.layer, args.bbox, args.size)

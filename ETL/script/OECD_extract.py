@@ -246,7 +246,20 @@ def fetch_csv(url: str, timeout: int, max_retries: int, penalties_429: List[int]
     r = robust_get(url, timeout=timeout, max_retries=max_retries, penalties_429=penalties_429)
     return pd.read_csv(StringIO(r.text), low_memory=False)
 
+# 🔹 NUEVO: helper de deduplicado inocuo (no altera columnas)
+def _drop_duplicates_safe(df: pd.DataFrame, note: str = "") -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    before = len(df)
+    df = df.drop_duplicates(ignore_index=True)
+    removed = before - len(df)
+    if removed > 0:
+        print(f"🧹 {note} eliminados {removed:,} duplicados (final: {len(df):,})")
+    return df
+
 def save_df(df: pd.DataFrame, name: str):
+    # 🔹 Dedup ANTES de persistir (sin cambiar esquema)
+    df = _drop_duplicates_safe(df, note=f"{name}.csv")
     df["extraction_date"] = datetime.now(UTC).strftime("%Y-%m-%d")
     path = os.path.join(OUT_DIR, f"{name}.csv")
     df.to_csv(path, index=False, encoding="utf-8")
