@@ -64,14 +64,14 @@ SCRIPTS = [
     ]
     },
     {
-        "file": "HRL_extract.py",
-        "args": [
-            "--service", "impervious",
-            "--layer", "density",
-            # Misma BBOX en EPSG:3857 (Mercator)
-            "--bbox", "-434145,4891968,-367311,4951156",
-            "--size", "2048"
-        ]
+    "file": "HRL_extract.py",
+    "args": [
+        "--service", "impervious",
+        "--layer", "density",
+        # Misma BBOX en EPSG:3857 (Mercator)
+        "--bbox", "-434145,4891968,-367311,4951156",
+        "--size", "2048"
+    ]
     },
 
     # --- 3. SENTINEL-2 (Variables deependientes / Eje Y) ---
