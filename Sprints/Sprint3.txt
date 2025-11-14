@@ -1,0 +1,36 @@
+SPRINT 3 — Finalización de ETL, ejecución en LORCA e integración de datos
+
+OBJETIVO:
+Completar la fase de limpieza, validación e integración de los datasets de las fuentes 
+Copernicus, Eurostat y EEA dentro del flujo ETL dockerizado. Desplegar los ejecutables en LORCA, 
+para el procesamiento distribuido de los datos.
+
+------------------------------------------------------------
+
+TAREAS PRINCIPALES:
+
+1. Limpieza y validación de datos:
+- Depuración y estandarización posterior a la extracción de los datos
+- Eliminación de duplicados, valores nulos y outliers en indicadores satelitales (NDVI, TCD, PM2.5, etc.).
+- Homogeneización de unidades y formatos (fechas, medidas, códigos ISO de país/FUA).
+- Verificación espacial de coordenadas con límites administrativos y FUAs para segmentar las zonas urbanas en nuestro análisis.
+- Integrar la etapa dentro del pipeline de cada fuente.
+- Hacer archivo de cómo se va a ejecutar la limpieza de los datos.
+→ Resultado esperado: datasets limpios, coherentes y normalizados listos para su integración en el Operational Data Store.
+
+2. Ejecución de los pipelines en infraestructura LORCA:
+- Adaptar los scripts a la arquitectura distribuida de LORCA.
+- Subir y configurar los ejecutables de ETL en LORCA para su ejecución en paralelo.
+→ Resultado esperado: pipelines ETL ejecutados exitosamente en LORCA.
+
+3. Integración de datos limpios en el Operational Data Store:
+- Cargar los datasets normalizados en los esquemas processed y analytics definidos en el sprint anterior.
+- Implementar validaciones post-carga (consistencia referencial, cobertura temporal y espacial).
+- Actualizar la documentación del modelo ER con las nuevas tablas y relaciones integradas.
+→ Resultado esperado: base de datos relacional actualizada con datos verificados y disponibles para consultas analíticas.
+
+ENTREGABLES SPRINT 3:
+- Pipelines ETL actualizados con etapas de limpieza y validación integradas.
+- Ejecutables ETL subidos y validados en LORCA.
+- Datasets limpios e integrados en la base de datos relacional.
+- Modelo ER actualizado con nuevas tablas y relaciones.
