@@ -19,7 +19,7 @@ Variables de entorno (Docker/CI):
   INVESTEU_RECIPIENT_PDFS=URL1,URL2   # opcional: lista explícita de PDFs a parsear
 """
 
-from __future__ import annotations
+from __future__ import annotations # Para interactuar con el sistema operativo (rutas, variables de entorno)
 import os, re, time, argparse, csv, math, sys
 import requests
 from datetime import datetime, UTC
@@ -30,9 +30,8 @@ from bs4 import BeautifulSoup
 import pdfplumber
 import pandas as pd
 
-# ---------------- Config ---------------- #
 
-BASE_DIR = Path(__file__).resolve().parents[2]  # sube hasta la raíz del proyecto (/app)
+BASE_DIR = Path(__file__).resolve().parents[2]  
 DATA_DIR = BASE_DIR / "data" / "raw" / "investeu"
 LOG_DIR = BASE_DIR / "logs"
 
@@ -40,7 +39,6 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 def log(msg: str):
-    """Escribe mensaje en consola y en log/etl_investeu.log"""
     ts = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
     line = f"{ts} {msg}"
     print(line)
@@ -59,16 +57,15 @@ def _drop_duplicates_safe(df: pd.DataFrame, note: str = "") -> pd.DataFrame:
     return df
 
 LIST_URL = "https://investeu.europa.eu/investeu-operations/investeu-operations-list_en"
-# Este PDF cambia por año; por defecto incluimos 2024 (puedes añadir más por env)
 DEFAULT_RECIPIENT_PDFS = [
     "https://www.eib.org/attachments/general/lists/investeu-final-recipients-beneficiaries-en.pdf"
 ]
 
-OUT_DIR = DATA_DIR  # forzamos salida a la carpeta Docker-friendly
+OUT_DIR = DATA_DIR  
 
 TIMEOUT = int(os.getenv("INVESTEU_TIMEOUT", "90"))
 MAX_RETRIES = int(os.getenv("INVESTEU_MAX_RETRIES", "3"))
-BASE_SLEEP = int(os.getenv("INVESTEU_BASE_SLEEP", "300"))  # pausa entre descargas
+BASE_SLEEP = int(os.getenv("INVESTEU_BASE_SLEEP", "300")) 
 PENALTIES = [int(x) for x in os.getenv("INVESTEU_429_PENALTIES", "300,600,1200").split(",") if x.strip()]
 
 HEADERS = {
@@ -76,7 +73,6 @@ HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
-# ---------------- Utilidades HTTP con backoff ---------------- #
 
 def get_with_backoff(url: str, params=None, headers=None) -> requests.Response:
     last_err = None
@@ -170,7 +166,6 @@ def scrape_operations_list(base_url: str = LIST_URL) -> pd.DataFrame:
     cols = ["title", "url", "date_text", "tags", "source", "extraction_date"]
     return df[cols]
 
-# ---------------- B) PDF EIB final recipients ---------------- #
 
 def normalise_pdf_table(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
@@ -227,7 +222,6 @@ def extract_final_recipients_from_pdf(pdf_url: str) -> pd.DataFrame:
     df = _drop_duplicates_safe(df, note="final_recipients(pdf)")
     return df
 
-# ---------------- Main ---------------- #
 
 def main():
     ap = argparse.ArgumentParser(description="InvestEU ETL (GTP) — operaciones y beneficiarios")
