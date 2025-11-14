@@ -21,7 +21,9 @@ from dotenv import load_dotenv
 import requests
 import pandas as pd
 from pandas import json_normalize
+from PIL import Image 
 
+Image.MAX_IMAGE_PIXELS = None # Para evitar errores con imágenes gigantes de satélite
 CAT_BASE = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
 TOKEN_URL = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
 
@@ -219,10 +221,33 @@ def extract_selected_from_zip(zip_path: str, mode: str, bands: list[str] | None,
         for m in sorted(to_get):
             safe_name = m.replace("/", "_")
             out_file = os.path.join(base_out, safe_name)
+
+
+
+            # --- INICIO CAMBIO CONVERSIÓN ---
             with zf.open(m) as src, open(out_file, "wb") as dst:
                 dst.write(src.read())
-            extracted.append(out_file)
-            print(f"✔ Extraído: {out_file}")
+            
+            # Si es una imagen .jp2 y queremos convertirla (solo para TCI/Visualización)
+            if out_file.lower().endswith(".jp2") and mode == "tci":
+                try:
+                    png_path = out_file.replace(".jp2", ".png")
+                    with Image.open(out_file) as img:
+                        print(f"   ↳ Convirtiendo a PNG...")
+                        img.save(png_path, "PNG")
+                    
+                    # Opcional: Borrar el .jp2 original para ahorrar espacio
+                    os.remove(out_file)
+                    extracted.append(png_path)
+                    print(f"✔ Generado: {png_path}")
+                except Exception as e:
+                    print(f"⚠️ Error convirtiendo imagen: {e}")
+                    extracted.append(out_file) # Si falla, nos quedamos con el jp2
+            else:
+                extracted.append(out_file)
+            # --- FIN CAMBIO ---
+
+
 
     return extracted
 
