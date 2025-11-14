@@ -1,8 +1,9 @@
-import os # Para interactuar con el sistema operativo (crear carpetas,unir rutas)
-import requests # Para realizar las peticiones HTTP (descargar las imágenes)
-import argparse # Para crear la interfaz de línea de comandos (ej: --service tree_cover)
-from urllib.parse import urlencode 
-from datetime import datetime # Para añadir fechas (timestamps) a los logs
+import os
+import requests
+import argparse
+from urllib.parse import urlencode
+from datetime import datetime
+from hashlib import md5  # 🔹 NUEVO: para firmar la solicitud (deduplicado)
 
 # ======================================================
 # CONFIGURACIÓN DE RUTAS Y LOGS
@@ -108,6 +109,41 @@ HRL_ENDPOINTS = {
 # FUNCIÓN DE DESCARGA (Lógica de API)
 # ======================================================
 
+def _sig_path(out_file: str) -> str:
+    """Ruta del archivo de firma .sig junto al PNG."""
+    return out_file + ".sig"
+
+def _calc_request_signature(url: str, params: dict) -> str:
+    """
+    Firma determinística del pedido (URL + params) para evitar descargas repetidas.
+    No cambia nombres de archivos; solo guarda/verifica una .sig.
+    """
+    # Normaliza el orden de los parámetros para que la firma sea estable
+    qs = urlencode(sorted(params.items()), doseq=True)
+    data = f"{url}?{qs}".encode("utf-8")
+    return md5(data).hexdigest()
+
+def _already_downloaded(out_file: str, signature: str) -> bool:
+    """Devuelve True si existe el PNG y su .sig coincide con la firma del pedido."""
+    if not os.path.exists(out_file):
+        return False
+    sig_file = _sig_path(out_file)
+    if not os.path.exists(sig_file):
+        return False
+    try:
+        with open(sig_file, "r", encoding="utf-8") as f:
+            prev = f.read().strip()
+        return prev == signature
+    except Exception:
+        return False
+
+def _write_signature(out_file: str, signature: str) -> None:
+    """Escribe/actualiza la firma del pedido junto al PNG."""
+    try:
+        with open(_sig_path(out_file), "w", encoding="utf-8") as f:
+            f.write(signature)
+    except Exception as e:
+        log(f"⚠️ No se pudo escribir firma: {e}")
 
 def download_layer(service, layer, bbox, size=1024, crs="EPSG:3857"):
     """
@@ -161,8 +197,12 @@ def download_layer(service, layer, bbox, size=1024, crs="EPSG:3857"):
             "size": f"{size},{size}" # Formato ancho/alto
         }
 
-    # 5. Ejecución de la descarga
-    # "requests" construirá la URL final (ej:url + ?service=WMS&version=1.1.0...)
+    # 🔹 NUEVO: deduplicado por firma (mismo pedido → no descarga de nuevo)
+    signature = _calc_request_signature(url, params)
+    if _already_downloaded(out_file, signature):
+        log(f"⏭️  Omitido (ya descargado con misma solicitud) → {out_file}")
+        return out_file
+
     r = requests.get(url, params=params, timeout=180)
 
     # Si la descarga falla detiene el script
@@ -173,6 +213,9 @@ def download_layer(service, layer, bbox, size=1024, crs="EPSG:3857"):
     # que no son texto, como imágenes, zips o PDFs
     with open(out_file, "wb") as f:
         f.write(r.content)
+
+    # 🔹 NUEVO: guarda la firma asociada a este PNG
+    _write_signature(out_file, signature)
 
     log(f"✅ Guardado en {out_file}")
     return out_file
@@ -188,6 +231,7 @@ if __name__ == "__main__":
     ap.add_argument("--bbox", required=True, help="Bounding box en EPSG:3857 (xmin,ymin,xmax,ymax)")
     ap.add_argument("--size", type=int, default=1024)
 
+    # 🔧 --- BLOQUE NUEVO: ajustar rutas Docker-friendly ---
     # 2. Lee los argumentos pasados desde "run_all.py"
     args = ap.parse_args()
 

@@ -282,12 +282,33 @@ def fetch_eurostat_table(dataset_code: str, params: dict | None = None) -> pd.Da
                     raise last
 
 
-# --------- Guardado (Load) ---------
+# -------------------- NUEVO: helper de deduplicado (mínimo e inocuo) -------------------- #
+
+def _drop_duplicates_safe(df: pd.DataFrame, note: str = "") -> pd.DataFrame:
+    """
+    Elimina filas duplicadas sin alterar el flujo ni las columnas.
+    - No cambia tipos ni orden de columnas.
+    - Loguea cuántos duplicados quitó (si los hay).
+    """
+    if df is None or df.empty:
+        return df
+    before = len(df)
+    df = df.drop_duplicates(ignore_index=True)
+    removed = before - len(df)
+    if removed > 0:
+        print(f"🧹 {note} eliminados {removed:,} duplicados (final: {len(df):,} filas)")
+    return df
+
+
+# -------------------- Guardado -------------------- #
+
 def save_csv(df: pd.DataFrame, name: str, out_dir: str):
     """
     Guarda un DataFrame simple como "nombre.csv"
     """
     os.makedirs(out_dir, exist_ok=True)
+    # 🔹 NUEVO: limpieza de duplicados antes de guardar
+    df = _drop_duplicates_safe(df, note=f"{name}.csv →")
     path = os.path.join(out_dir, f"{name}.csv")
     df.to_csv(path, index=False, encoding="utf-8")
     print(f"✅ {name}.csv → {path} ({len(df):,} filas)")
@@ -306,6 +327,8 @@ def save_part(df: pd.DataFrame, group_name: str, part_idx: int, out_dir: str, so
         df = df.copy()
         if "source_table" not in df.columns:
             df["source_table"] = source_table
+    # 🔹 NUEVO: limpieza de duplicados antes de guardar
+    df = _drop_duplicates_safe(df, note=f"{group_name}::part{part_idx} →")
     df.to_csv(path, index=False, encoding="utf-8")
     print(f"✅ {group_name} :: part{part_idx} ({source_table or ''}) → {path} ({len(df):,} filas)")
 
@@ -331,6 +354,8 @@ def merge_parts(group_name: str, out_dir: str):
 
     # Concatena todos los DataFrames en uno solo
     merged = pd.concat(frames, ignore_index=True)
+    # 🔹 NUEVO: limpieza de duplicados en el merged
+    merged = _drop_duplicates_safe(merged, note=f"{group_name}.csv (merge) →")
     path = os.path.join(out_dir, f"{group_name}.csv")
     merged.to_csv(path, index=False, encoding="utf-8")
     print(f"🤝 {group_name}.csv (merge) → {path} ({len(merged):,} filas)")

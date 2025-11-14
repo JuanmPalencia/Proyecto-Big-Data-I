@@ -45,14 +45,16 @@ def log(msg: str):
     with open(LOG_DIR / "etl_investeu.log", "a", encoding="utf-8") as f:
         f.write(line + "\n")
 
-
-
-
-
-
-
-
-
+# 🔹 NUEVO: helper de deduplicado inocuo
+def _drop_duplicates_safe(df: pd.DataFrame, note: str = "") -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    before = len(df)
+    df = df.drop_duplicates(ignore_index=True)
+    removed = before - len(df)
+    if removed > 0:
+        log(f"🧹 {note} eliminados {removed:,} duplicados (final: {len(df):,})")
+    return df
 
 LIST_URL = "https://investeu.europa.eu/investeu-operations/investeu-operations-list_en"
 DEFAULT_RECIPIENT_PDFS = [
@@ -99,12 +101,12 @@ def get_with_backoff(url: str, params=None, headers=None) -> requests.Response:
                 raise
             print(f"   ⚠️  Error conexión — reintento {attempt}/{MAX_RETRIES} en 15s…")
             time.sleep(15)
-    raise last_err  
+    raise last_err
+
+# ---------------- A) Scraper listado operaciones ---------------- #
 
 def parse_list_page(html: str) -> Dict[str, List[Dict]]:
-
     soup = BeautifulSoup(html, "html.parser")
-
     items = []
     for a in soup.select('a[href*="/investeu-operations/"]'):
         href = a.get("href") or ""
@@ -128,6 +130,7 @@ def parse_list_page(html: str) -> Dict[str, List[Dict]]:
                 "tags": ";".join(tags) if tags else None,
             })
 
+    # Paginación (best-effort)
     next_url = None
     for sel in ["a[rel='next']", "a.pager__link--next", "a:contains('Next')", "a:contains('next')"]:
         nxt = soup.select_one(sel)
@@ -215,6 +218,8 @@ def extract_final_recipients_from_pdf(pdf_url: str) -> pd.DataFrame:
     df = normalise_pdf_table(df)
     df["pdf_url"] = pdf_url
     df["extraction_date"] = datetime.now(UTC).strftime("%Y-%m-%d")
+    # 🔹 NUEVO: dedup genérico por fila completa (no altera columnas)
+    df = _drop_duplicates_safe(df, note="final_recipients(pdf)")
     return df
 
 
@@ -238,6 +243,8 @@ def main():
         try:
             df_list = scrape_operations_list(LIST_URL)
             if not df_list.empty:
+                # 🔹 NUEVO: dedup final por si el sitio repite enlaces
+                df_list = _drop_duplicates_safe(df_list, note="operations_list.csv")
                 p = out / "operations_list.csv"
                 df_list.to_csv(p, index=False, encoding="utf-8")
                 print(f"✅ operations_list.csv -> {p} ({len(df_list):,} filas)")
@@ -266,6 +273,8 @@ def main():
 
         if all_pdf_rows:
             df_all = pd.concat(all_pdf_rows, ignore_index=True)
+            # 🔹 NUEVO: dedup combinado (por seguridad)
+            df_all = _drop_duplicates_safe(df_all, note="final_recipients(all)")
             year_hint = ""
             m = re.search(r"(20\d{2})", " ".join(pdf_urls))
             if m:

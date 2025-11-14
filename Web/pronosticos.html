@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>GTP · Pronósticos</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="gtp">
+<header class="topbar">
+  <div class="brand"><a href="index.html">GTP · Portal</a></div>
+  <nav class="nav">
+    <a href="index.html">Inicio</a>
+    <a href="dashboard.html">Dashboards</a>
+    <a href="mapa.html">Mapa</a>
+    <a href="ficha_pais.html">Ficha país</a>
+    <a class="active" href="pronosticos.html">Pronósticos</a>
+  </nav>
+  <a class="btn sm" href="login.html">Iniciar sesión</a>
+</header>
+
+<main class="container">
+  <section class="hero">
+    <h1>Pronósticos</h1>
+    <p>Modelos/escenarios (ARIMA/Prophet/ML). Aquí irán gráficos y tarjetas.</p>
+    <div class="actions">
+      <a class="btn" href="index.html">Volver al inicio</a>
+    </div>
+  </section>
+
+  <section class="grid-2">
+    <article class="card">
+      <h3>PIB (12 meses)</h3>
+      <div class="embed-holder">Chart/iframe</div>
+    </article>
+    <article class="card">
+      <h3>Emisiones GEI</h3>
+      <div class="embed-holder">Chart/iframe</div>
+    </article>
+  </section>
+
+  <section class="card">
+    <h3>Notas metodológicas</h3>
+    <p>Frecuencia, esquema de entrenamiento, métricas (MAPE/RMSE).</p>
+  </section>
+</main>
+
+<footer class="footer">
+  <small>© GTP · Pronósticos experimentales.</small>
+</footer>
+<script src="app.js"></script>
+</body>
+</html>

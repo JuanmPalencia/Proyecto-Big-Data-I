@@ -1,15 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
 Sentinel-2 — Descargar ZIP completo (.SAFE) y extraer solo TCI/Bxx/SCL del interior.
-
-Requisitos:
-  pip install requests pandas python-dotenv charset-normalizer
-
-Credenciales (.env en la carpeta del proyecto o variables de entorno):
-  COPERNICUS_USER=tu_usuario
-  COPERNICUS_PASSWORD=tu_password
+...
 """
 
 from __future__ import annotations
@@ -27,7 +20,6 @@ Image.MAX_IMAGE_PIXELS = None # Para evitar errores con imágenes gigantes de sa
 CAT_BASE = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
 TOKEN_URL = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
 
-# ----------------- utilidades -----------------
 def iso_day(d: date) -> str:
     return d.strftime("%Y-%m-%d")
 
@@ -43,20 +35,13 @@ def ensure_env(var: str) -> str:
     return v
 
 def get_keycloak(username: str, password: str) -> str:
-    data = {
-        "client_id": "cdse-public",
-        "username": username,
-        "password": password,
-        "grant_type": "password",
-    }
+    data = {"client_id": "cdse-public", "username": username, "password": password, "grant_type": "password"}
     r = requests.post(TOKEN_URL, data=data, timeout=60)
     try:
         r.raise_for_status()
     except Exception:
-        try:
-            payload = r.json()
-        except Exception:
-            payload = r.text
+        try: payload = r.json()
+        except Exception: payload = r.text
         raise RuntimeError(f"Fallo creando token. Respuesta: {payload}")
     return r.json()["access_token"]
 
@@ -88,28 +73,22 @@ def fetch_all(collection: str, start_iso: str, end_iso: str, wkt: str | None,
         "$orderby": orderby,
         "$top": str(top),
     }
-    if include_count:
-        params["$count"] = "true"
-    if select:
-        params["$select"] = select
+    if include_count: params["$count"] = "true"
+    if select: params["$select"] = select
 
     all_items, count, skip = [], None, 0
     for _ in range(max_pages):
         page_params = dict(params)
-        if skip:
-            page_params["$skip"] = str(skip)
+        if skip: page_params["$skip"] = str(skip)
         js = fetch_page(page_params)
-        if "@odata.count" in js and count is None:
-            count = js["@odata.count"]
+        if "@odata.count" in js and count is None: count = js["@odata.count"]
         items = js.get("value", [])
         all_items.extend(items)
-        if len(items) < top:
-            break
+        if len(items) < top: break
         skip += top
         time.sleep(0.3)
     out = {"value": all_items}
-    if count is not None:
-        out["@odata.count"] = count
+    if count is not None: out["@odata.count"] = count
     return out
 
 def to_flat_df(js: dict) -> pd.DataFrame:
@@ -128,34 +107,34 @@ def follow_redirects(session: requests.Session, url: str, max_hops: int = 10) ->
     hops = 0
     while resp.status_code in (301, 302, 303, 307, 308) and hops < max_hops:
         loc = resp.headers.get("Location")
-        if not loc:
-            break
+        if not loc: break
         resp = session.get(loc, allow_redirects=False, timeout=300)
         hops += 1
     return resp
 
-# ----------------- descarga ZIP completo -----------------
+# 🔹 NUEVO: si el ZIP ya existe, no lo vuelve a descargar
 def download_product_zip(session: requests.Session, product_id: str, identifier: str, out_dir: str) -> str:
     """
     Descarga el .SAFE (ZIP) completo:
       GET https://catalogue.dataspace.copernicus.eu/odata/v1/Products(<GUID>)/$value
-    (sin comillas en el GUID aquí)
     """
+    os.makedirs(out_dir, exist_ok=True)
+    out_zip = os.path.join(out_dir, f"{identifier}.zip")
+    if os.path.exists(out_zip):
+        print(f"⏭️  ZIP ya existe, omitiendo descarga: {out_zip}")
+        return out_zip
+
     url = f"{CAT_BASE}({product_id})/$value"
     resp = follow_redirects(session, url)
     resp.raise_for_status()
-    os.makedirs(out_dir, exist_ok=True)
-    out_zip = os.path.join(out_dir, f"{identifier}.zip")
     with open(out_zip, "wb") as f:
         f.write(resp.content)
     return out_zip
 
-# ----------------- extracción desde el ZIP -----------------
 def build_patterns(mode: str, bands: list[str] | None) -> list[str]:
     mode = (mode or "").lower()
     pats: list[str] = []
     if mode == "tci":
-        # Patrones ampliados: cubren *_TCI_10m.jp2 y variantes
         pats = [
             "*IMG_DATA*/R10m/*TCI*.jp2",
             "*IMG_DATA*/R20m/*TCI*.jp2",
@@ -188,15 +167,12 @@ def build_patterns(mode: str, bands: list[str] | None) -> list[str]:
             ]
     return pats
 
-
-
 def extract_selected_from_zip(zip_path: str, mode: str, bands: list[str] | None, out_dir: str) -> list[str]:
     pats = build_patterns(mode, bands)
     extracted: list[str] = []
     with zipfile.ZipFile(zip_path, "r") as zf:
         members = zf.namelist()
 
-        # --- Diagnóstico opcional para TCI ---
         if mode.lower() == "tci":
             tci_candidates = [m for m in members if "TCI" in m.upper()]
             if tci_candidates:
@@ -204,7 +180,6 @@ def extract_selected_from_zip(zip_path: str, mode: str, bands: list[str] | None,
                 for x in tci_candidates[:20]:
                     print("  -", x)
 
-        # filtrar por patrones
         to_get = set()
         for pat in pats:
             for m in members:
@@ -251,8 +226,6 @@ def extract_selected_from_zip(zip_path: str, mode: str, bands: list[str] | None,
 
     return extracted
 
-
-# ----------------- CLI -----------------
 AOIS = {
     "tiny": "POLYGON((0 0, 0 1, 1 1, 1 0, 0 0))",
     "madrid": "POLYGON((-3.9 40.2, -3.9 40.6, -3.3 40.6, -3.3 40.2, -3.9 40.2))",
@@ -273,8 +246,6 @@ def parse_args():
     ap.set_defaults(only_l2a=True)
     ap.add_argument("--tile", type=str, default=None)
     ap.add_argument("--csv", type=str, default="copernicus_schema_sample.csv")
-
-    # descarga + extracción
     ap.add_argument("--download", action="store_true", help="Descargar ZIP .SAFE y extraer")
     ap.add_argument("--asset", type=str, choices=["tci", "scl"], default=None, help="tci | scl")
     ap.add_argument("--bands", type=str, default=None, help="B04,B08,...")
@@ -282,7 +253,6 @@ def parse_args():
     ap.add_argument("--out-dir", type=str, default="data/s2")
     return ap.parse_args()
 
-# ----------------- main -----------------
 def main():
     load_dotenv()
     args = parse_args()
@@ -291,11 +261,7 @@ def main():
     os.makedirs(DATA_DIR, exist_ok=True)
     args.out_dir = DATA_DIR
     args.csv = os.path.join(DATA_DIR, os.path.basename(args.csv))
-    
 
-
-
-    # AOI
     if args.aoi == "custom":
         if not args.wkt:
             print("ERROR: --aoi custom requiere --wkt 'POLYGON((...))'", file=sys.stderr)
@@ -349,7 +315,6 @@ def main():
         print("\nDescarga desactivada (usa --download).")
         return
 
-    # auth
     try:
         user = ensure_env("COPERNICUS_USER")
         pwd = ensure_env("COPERNICUS_PASSWORD")
@@ -366,7 +331,6 @@ def main():
     session = requests.Session()
     session.headers.update({"Authorization": f"Bearer {token}"})
 
-    # modo extracción
     bands = None
     mode = "tci"
     if args.bands:
