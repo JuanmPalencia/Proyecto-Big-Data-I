@@ -34,7 +34,6 @@ data/**/*.jsonl
 *.png
 *.xlsx
 *.xlsm
-*.txt
 
 
 # Ignorar backups y outputs grandes

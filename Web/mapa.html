@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>GTP · Mapa interactivo</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="gtp">
+<header class="topbar">
+  <div class="brand"><a href="index.html">GTP · Portal</a></div>
+  <nav class="nav">
+    <a href="index.html">Inicio</a>
+    <a href="dashboard.html">Dashboards</a>
+    <a class="active" href="mapa.html">Mapa</a>
+    <a href="ficha_pais.html">Ficha país</a>
+    <a href="pronosticos.html">Pronósticos</a>
+  </nav>
+  <a class="btn sm" href="login.html">Iniciar sesión</a>
+</header>
+
+<main class="container">
+  <section class="hero">
+    <h1>Mapa interactivo</h1>
+    <p>Contenedor para tu visor (Leaflet/MapLibre). Mantiene la estética GTP.</p>
+    <div class="actions">
+      <a class="btn" href="index.html">Volver al inicio</a>
+    </div>
+  </section>
+
+  <section class="card">
+    <h3>Visor</h3>
+    <div id="map" class="map-holder">Aquí va el mapa</div>
+  </section>
+
+  <section class="grid-3">
+    <div class="card"><h4>Capas</h4><ul><li>HRL Impervious</li><li>Tree Cover</li><li>Urban Atlas</li></ul></div>
+    <div class="card"><h4>Filtros</h4><p>País, año, variable…</p></div>
+    <div class="card"><h4>Detalle</h4><p>Tooltip/insights seleccionados.</p></div>
+  </section>
+</main>
+
+<footer class="footer">
+  <small>© GTP · Fuente: Copernicus HRL & Eurostat.</small>
+</footer>
+<script src="app.js"></script>
+</body>
+</html>
