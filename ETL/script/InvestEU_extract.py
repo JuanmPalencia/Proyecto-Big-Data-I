@@ -19,7 +19,7 @@ Variables de entorno (Docker/CI):
   INVESTEU_RECIPIENT_PDFS=URL1,URL2   # opcional: lista explícita de PDFs a parsear
 """
 
-from __future__ import annotations # Para interactuar con el sistema operativo (rutas, variables de entorno)
+from __future__ import annotations  # Para interactuar con el sistema operativo (rutas, variables de entorno)
 import os, re, time, argparse, csv, math, sys
 import requests
 from datetime import datetime, UTC
@@ -31,12 +31,13 @@ import pdfplumber
 import pandas as pd
 
 
-BASE_DIR = Path(__file__).resolve().parents[2]  
+BASE_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = BASE_DIR / "data" / "raw" / "investeu"
 LOG_DIR = BASE_DIR / "logs"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def log(msg: str):
     ts = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
@@ -45,7 +46,8 @@ def log(msg: str):
     with open(LOG_DIR / "etl_investeu.log", "a", encoding="utf-8") as f:
         f.write(line + "\n")
 
-# 🔹 NUEVO: helper de deduplicado inocuo
+
+# 🔹 NUEVO: helper de deduplicado inocuo (tomado del segundo script)
 def _drop_duplicates_safe(df: pd.DataFrame, note: str = "") -> pd.DataFrame:
     if df is None or df.empty:
         return df
@@ -56,16 +58,17 @@ def _drop_duplicates_safe(df: pd.DataFrame, note: str = "") -> pd.DataFrame:
         log(f"🧹 {note} eliminados {removed:,} duplicados (final: {len(df):,})")
     return df
 
+
 LIST_URL = "https://investeu.europa.eu/investeu-operations/investeu-operations-list_en"
 DEFAULT_RECIPIENT_PDFS = [
     "https://www.eib.org/attachments/general/lists/investeu-final-recipients-beneficiaries-en.pdf"
 ]
 
-OUT_DIR = DATA_DIR  
+OUT_DIR = DATA_DIR
 
 TIMEOUT = int(os.getenv("INVESTEU_TIMEOUT", "90"))
 MAX_RETRIES = int(os.getenv("INVESTEU_MAX_RETRIES", "3"))
-BASE_SLEEP = int(os.getenv("INVESTEU_BASE_SLEEP", "300")) 
+BASE_SLEEP = int(os.getenv("INVESTEU_BASE_SLEEP", "300"))
 PENALTIES = [int(x) for x in os.getenv("INVESTEU_429_PENALTIES", "300,600,1200").split(",") if x.strip()]
 
 HEADERS = {
@@ -82,9 +85,11 @@ def get_with_backoff(url: str, params=None, headers=None) -> requests.Response:
         try:
             r = requests.get(url, params=params, headers=headers, timeout=TIMEOUT)
             if r.status_code == 429:
-                wait_s = PENALTIES[min(penalty_idx, len(PENALTIES)-1)]
+                wait_s = PENALTIES[min(penalty_idx, len(PENALTIES) - 1)]
                 penalty_idx += 1
-                print(f"   ⏳ 429 rate limit — esperando {wait_s}s (intento {attempt}/{MAX_RETRIES})…")
+                print(
+                    f"   ⏳ 429 rate limit — esperando {wait_s}s (intento {attempt}/{MAX_RETRIES})…"
+                )
                 time.sleep(wait_s)
                 continue
             r.raise_for_status()
@@ -93,20 +98,24 @@ def get_with_backoff(url: str, params=None, headers=None) -> requests.Response:
             last_err = e
             if attempt == MAX_RETRIES:
                 raise
-            print(f"   ⚠️  HTTP {e.response.status_code} — reintento {attempt}/{MAX_RETRIES} en 30s…")
+            print(
+                f"   ⚠️  HTTP {e.response.status_code} — reintento {attempt}/{MAX_RETRIES} en 30s…"
+            )
             time.sleep(30)
         except Exception as e:
             last_err = e
             if attempt == MAX_RETRIES:
                 raise
-            print(f"   ⚠️  Error conexión — reintento {attempt}/{MAX_RETRIES} en 15s…")
+            print(
+                f"   ⚠️  Error conexión — reintento {attempt}/{MAX_RETRIES} en 15s…"
+            )
             time.sleep(15)
     raise last_err
 
-# ---------------- A) Scraper listado operaciones ---------------- #
 
 def parse_list_page(html: str) -> Dict[str, List[Dict]]:
     soup = BeautifulSoup(html, "html.parser")
+
     items = []
     for a in soup.select('a[href*="/investeu-operations/"]'):
         href = a.get("href") or ""
@@ -118,27 +127,38 @@ def parse_list_page(html: str) -> Dict[str, List[Dict]]:
             m_date = re.search(r"(\d{1,2}\s+[A-Z][a-z]+\s+\d{4})", meta_text)
             date = m_date.group(1) if m_date else None
             tags = []
-            for tag_sel in ["span.field--name-field-tags a", ".tags a", "a[href*='/country/']"]:
+            for tag_sel in [
+                "span.field--name-field-tags a",
+                ".tags a",
+                "a[href*='/country/']",
+            ]:
                 for t in li.select(tag_sel):
                     txt = t.get_text(strip=True)
                     if txt and txt not in tags:
                         tags.append(txt)
-            items.append({
-                "title": title,
-                "url": url,
-                "date_text": date,
-                "tags": ";".join(tags) if tags else None,
-            })
+            items.append(
+                {
+                    "title": title,
+                    "url": url,
+                    "date_text": date,
+                    "tags": ";".join(tags) if tags else None,
+                }
+            )
 
-    # Paginación (best-effort)
     next_url = None
-    for sel in ["a[rel='next']", "a.pager__link--next", "a:contains('Next')", "a:contains('next')"]:
+    for sel in [
+        "a[rel='next']",
+        "a.pager__link--next",
+        "a:contains('Next')",
+        "a:contains('next')",
+    ]:
         nxt = soup.select_one(sel)
         if nxt and nxt.get("href"):
             next_url = urljoin(LIST_URL, nxt.get("href"))
             break
 
     return {"items": items, "next_url": next_url}
+
 
 def scrape_operations_list(base_url: str = LIST_URL) -> pd.DataFrame:
     print("🔄 Listado de operaciones InvestEU …")
@@ -172,26 +192,48 @@ def normalise_pdf_table(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
     df = df.dropna(how="all", axis=1)
     df = df.rename(columns=lambda c: str(c).strip())
-    expected = ["Financial Product", "Operation Name", "Borrower Name", "Borrower Address",
-                "Borrower Country", "Financing Form", "Policy Area supported",
-                "Amount of financial support received in EUR"]
+    expected = [
+        "Financial Product",
+        "Operation Name",
+        "Borrower Name",
+        "Borrower Address",
+        "Borrower Country",
+        "Financing Form",
+        "Policy Area supported",
+        "Amount of financial support received in EUR",
+    ]
     rename_map = {}
     for col in df.columns:
         c = col.lower()
-        if "financial" in c and "product" in c: rename_map[col] = "Financial Product"
-        elif "operation" in c and "name" in c: rename_map[col] = "Operation Name"
-        elif "borrower" in c and "name" in c: rename_map[col] = "Borrower Name"
-        elif "borrower" in c and "address" in c: rename_map[col] = "Borrower Address"
-        elif "country" in c: rename_map[col] = "Borrower Country"
-        elif "financing" in c and "form" in c: rename_map[col] = "Financing Form"
-        elif "policy" in c and "area" in c: rename_map[col] = "Policy Area supported"
-        elif "amount" in c and "eur" in c: rename_map[col] = "Amount of financial support received in EUR"
+        if "financial" in c and "product" in c:
+            rename_map[col] = "Financial Product"
+        elif "operation" in c and "name" in c:
+            rename_map[col] = "Operation Name"
+        elif "borrower" in c and "name" in c:
+            rename_map[col] = "Borrower Name"
+        elif "borrower" in c and "address" in c:
+            rename_map[col] = "Borrower Address"
+        elif "country" in c:
+            rename_map[col] = "Borrower Country"
+        elif "financing" in c and "form" in c:
+            rename_map[col] = "Financing Form"
+        elif "policy" in c and "area" in c:
+            rename_map[col] = "Policy Area supported"
+        elif "amount" in c and "eur" in c:
+            rename_map[col] = "Amount of financial support received in EUR"
     df = df.rename(columns=rename_map)
     return df
 
+
 def extract_final_recipients_from_pdf(pdf_url: str) -> pd.DataFrame:
     print(f"🔄 PDF EIB recipients: {pdf_url}")
-    r = get_with_backoff(pdf_url, headers={"User-Agent": HEADERS["User-Agent"], "Accept": "application/pdf"})
+    r = get_with_backoff(
+        pdf_url,
+        headers={
+            "User-Agent": HEADERS["User-Agent"],
+            "Accept": "application/pdf",
+        },
+    )
     with open(OUT_DIR / "_tmp_investeu.pdf", "wb") as f:
         f.write(r.content)
 
@@ -202,7 +244,9 @@ def extract_final_recipients_from_pdf(pdf_url: str) -> pd.DataFrame:
                 tbl = page.extract_table()
                 if not tbl or len(tbl) < 2:
                     continue
-                header = [str(x).strip() if x is not None else "" for x in tbl[0]]
+                header = [
+                    str(x).strip() if x is not None else "" for x in tbl[0]
+                ]
                 rows = tbl[1:]
                 df = pd.DataFrame(rows, columns=header)
                 df["page"] = i
@@ -211,24 +255,38 @@ def extract_final_recipients_from_pdf(pdf_url: str) -> pd.DataFrame:
                 continue
 
     if not tables:
-        print("⚠️  No se extrajeron tablas del PDF (estructura no tabular).")
+        print(
+            "⚠️  No se extrajeron tablas del PDF (estructura no tabular)."
+        )
         return pd.DataFrame()
 
     df = pd.concat(tables, ignore_index=True)
     df = normalise_pdf_table(df)
     df["pdf_url"] = pdf_url
     df["extraction_date"] = datetime.now(UTC).strftime("%Y-%m-%d")
-    # 🔹 NUEVO: dedup genérico por fila completa (no altera columnas)
+    # 🔹 NUEVO: dedup genérico por fila completa (igual que en el segundo script)
     df = _drop_duplicates_safe(df, note="final_recipients(pdf)")
     return df
 
 
 def main():
-    ap = argparse.ArgumentParser(description="InvestEU ETL (GTP) — operaciones y beneficiarios")
-    ap.add_argument("--what", default="all", choices=["all", "list", "recipients"],
-                    help="Qué extraer: list (operaciones), recipients (beneficiarios PDF) o all")
-    ap.add_argument("--years", default="", help="Años objetivo p/ recipients (informativo si pasas PDFs explícitos)")
-    ap.add_argument("--out-dir", default=str(OUT_DIR), help="Carpeta salida")
+    ap = argparse.ArgumentParser(
+        description="InvestEU ETL (GTP) — operaciones y beneficiarios"
+    )
+    ap.add_argument(
+        "--what",
+        default="all",
+        choices=["all", "list", "recipients"],
+        help="Qué extraer: list (operaciones), recipients (beneficiarios PDF) o all",
+    )
+    ap.add_argument(
+        "--years",
+        default="",
+        help="Años objetivo p/ recipients (informativo si pasas PDFs explícitos)",
+    )
+    ap.add_argument(
+        "--out-dir", default=str(OUT_DIR), help="Carpeta salida"
+    )
     args = ap.parse_args()
 
     out = Path(args.out_dir)
@@ -237,17 +295,23 @@ def main():
     print("🚀 InvestEU ETL — inicio")
     print(f"   Carpeta out: {out}")
     print(f"   Timeout:     {TIMEOUT}s | Retries: {MAX_RETRIES}")
-    print(f"   Pausa base:  {BASE_SLEEP}s  | Castigos 429 (s): {PENALTIES}\n")
+    print(
+        f"   Pausa base:  {BASE_SLEEP}s  | Castigos 429 (s): {PENALTIES}\n"
+    )
 
     if args.what in ("all", "list"):
         try:
             df_list = scrape_operations_list(LIST_URL)
             if not df_list.empty:
                 # 🔹 NUEVO: dedup final por si el sitio repite enlaces
-                df_list = _drop_duplicates_safe(df_list, note="operations_list.csv")
+                df_list = _drop_duplicates_safe(
+                    df_list, note="operations_list.csv"
+                )
                 p = out / "operations_list.csv"
                 df_list.to_csv(p, index=False, encoding="utf-8")
-                print(f"✅ operations_list.csv -> {p} ({len(df_list):,} filas)")
+                print(
+                    f"✅ operations_list.csv -> {p} ({len(df_list):,} filas)"
+                )
         except requests.HTTPError as e:
             print(f"❌ HTTP list: {e}")
         except Exception as e:
@@ -257,7 +321,11 @@ def main():
 
     if args.what in ("all", "recipients"):
         pdfs_env = os.getenv("INVESTEU_RECIPIENT_PDFS")
-        pdf_urls = [u.strip() for u in pdfs_env.split(",")] if pdfs_env else DEFAULT_RECIPIENT_PDFS
+        pdf_urls = (
+            [u.strip() for u in pdfs_env.split(",")]
+            if pdfs_env
+            else DEFAULT_RECIPIENT_PDFS
+        )
 
         all_pdf_rows = []
         for u in pdf_urls:
@@ -273,17 +341,24 @@ def main():
 
         if all_pdf_rows:
             df_all = pd.concat(all_pdf_rows, ignore_index=True)
-            # 🔹 NUEVO: dedup combinado (por seguridad)
-            df_all = _drop_duplicates_safe(df_all, note="final_recipients(all)")
+            # 🔹 NUEVO: dedup combinado (por seguridad, como en el segundo script)
+            df_all = _drop_duplicates_safe(
+                df_all, note="final_recipients(all)"
+            )
             year_hint = ""
             m = re.search(r"(20\d{2})", " ".join(pdf_urls))
             if m:
                 year_hint = f"_{m.group(1)}"
             p = out / f"final_recipients{year_hint}.csv"
             df_all.to_csv(p, index=False, encoding="utf-8")
-            print(f"✅ final_recipients{year_hint}.csv -> {p} ({len(df_all):,} filas)")
+            print(
+                f"✅ final_recipients{year_hint}.csv -> {p} ({len(df_all):,} filas)"
+            )
 
-    print(f"\n🕒 Fin: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    print(
+        f"\n🕒 Fin: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+    )
+
 
 if __name__ == "__main__":
     main()

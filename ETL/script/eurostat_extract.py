@@ -14,14 +14,14 @@ Opcional:
   --eager-merge  -> fusiona automáticamente las partes de cada grupo en un único CSV (nombre.csv)
 """
 
-import os # Para gestionar rutas de archivos y carpetas del sistema
-import sys # Para gestionar algumentos del sistema y salir del script (sys.exit)
-import argparse # Para crear la interfaz de línea de comandos (CLI) ej. --datasets all
-import time # Para poner pausas (time.sleep) y ser amables con la API
-import requests # El cliente HTTP para descargar los datos de la api
-import pandas as pd # La librería principal para manipular los datos en tablas
-from io import StringIO # Para leer cadenas de texto (el TSV) como si fueran archivos
-from datetime import datetime, UTC # Para añadir marcas de tiempo (timestamps) a los datos
+import os  # Para gestionar rutas de archivos y carpetas del sistema
+import sys  # Para gestionar argumentos del sistema y salir del script (sys.exit)
+import argparse  # Para crear la interfaz de línea de comandos (CLI) ej. --datasets all
+import time  # Para poner pausas (time.sleep) y ser amables con la API
+import requests  # El cliente HTTP para descargar los datos de la API
+import pandas as pd  # La librería principal para manipular los datos en tablas
+from io import StringIO  # Para leer cadenas de texto (el TSV) como si fueran archivos
+from datetime import datetime, UTC  # Para añadir marcas de tiempo (timestamps) a los datos
 
 
 # ======================================================
@@ -32,7 +32,7 @@ from datetime import datetime, UTC # Para añadir marcas de tiempo (timestamps) 
 # Esta es la configuración principal del script
 DATASETS = {
     # --- ECONÓMICO (Eje X de la curva) ---
-    "gdp_per_capita": "nama_10_pc", # Producto interior bruto
+    "gdp_per_capita": "nama_10_pc",  # Producto interior bruto
     "employment_by_sector": "nama_10_a64_e",   # Empleo por industria
     "gross_fixed_capital": "nama_10_an6",
     "productivity": "nama_10_lp_ulc",
@@ -45,59 +45,58 @@ DATASETS = {
     "household_size": "ilc_lvph01",
 
     # --- AMBIENTAL (Eje Y de tu curva (el más importante))
-    "ghg_emissions": "env_air_emis", # Emisiones de gases de efecto invernadero
-    "renewable_energy": "nrg_ind_ren", # % de energías renovables
-    #"energy_consumption": "nrg_bal_c",
-    "environmental_expenditure": "env_ac_exp2", # Gasto en protección ambiental
+    "ghg_emissions": "env_air_emis",  # Emisiones de gases de efecto invernadero
+    "renewable_energy": "nrg_ind_ren",  # % de energías renovables
+    # "energy_consumption": "nrg_bal_c",
+    "environmental_expenditure": "env_ac_exp2",  # Gasto en protección ambiental
 
     # --- SOCIAL (I+D), variables de control ---
     "poverty_rate": "ilc_peps01",
-    "innovation_rd": "rd_e_gerdtot", # Gasto en I+D
+    "innovation_rd": "rd_e_gerdtot",  # Gasto en I+D
 }
 
-# --- Grupos (Datasets Lógicos que unen varias tavlas de Eurostat) ---
+# --- Grupos (Datasets Lógicos que unen varias tablas de Eurostat) ---
 DATASET_GROUPS = {
-    # EGGS -- Sector de bienes y servicios ambientales (CLAVE)
+    # EGSS -- Sector de bienes y servicios ambientales (CLAVE)
     "egss": [
-        "env_ac_egss1", # Producción, exportaciones...  
+        "env_ac_egss1",  # Producción, exportaciones...
         "env_ac_egss2",  # Empleo en el sector verde
     ],
-    #Indicadores de bienestar (proxy)
+    # Indicadores de bienestar (proxy)
     "bli_indicators": [
-        "ilc_pw01", # Satisfacción vital
-        "hlth_silc_01", # Autopercepción de la salud
-        "ilc_di12", # Ingresos netos
+        "ilc_pw01",        # Satisfacción vital
+        "hlth_silc_01",    # Autopercepción de la salud
+        "ilc_di12",        # Ingresos netos
     ],
-    #Bienestar Regional (Para análisis NUTS2)
+    # Bienestar Regional (Para análisis NUTS2)
     "regional_wellbeing": [
-        "nama_10r_3gdp", # Pib Regional
-        "lfst_r_lfu3rt", # Tasa de paro regional
-        "edat_lfse_04", # Educación Terciaria
-        # Si está disponible y lo quieres añadir:
-        # "demo_r_mlifexp",  # life expectancy (NUTS2)
+        "nama_10r_3gdp",   # PIB Regional
+        "lfst_r_lfu3rt",   # Tasa de paro regional
+        "edat_lfse_04",    # Educación Terciaria
+        # "demo_r_mlifexp",  # life expectancy (NUTS2) si lo quieres añadir
     ],
     # Economía circular
     "circular": [
-        "cei_srm030", # Tasa de uso de material circular (CMU)
-        "cei_srm020", # Tasa de reciclaje de basura municipal
-        # "cei_srm030",   
+        "cei_srm030",  # Tasa de uso de material circular (CMU)
+        "cei_srm020",  # Tasa de reciclaje de basura municipal
+        # "cei_srm030",   # Ejemplo para añadir más tarde
     ],
 }
 
 
 # ======================================================
-# BLOQUE 2: CPFIGURACIÓN DE RED
+# BLOQUE 2: CONFIGURACIÓN DE RED
 # ======================================================
 
 # URL base de la nueva API (v1.0) de Eurostat
 BASE_URL = "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/"
 
-# Ruta por defecto donde se guardarán los datos (reekativa al script runall)
+# Ruta por defecto donde se guardarán los datos (relativa al script runall)
 DEFAULT_OUT = os.path.join("data", "raw", "eurostat")
 
 # Parámetros de robustez de red
-TIMEOUT = 90 # Tiempo máximo de espera por una respuesta
-RETRIES = 3 # Número de intentos si falla la conexión
+TIMEOUT = 90  # Tiempo máximo de espera por una respuesta
+RETRIES = 3  # Número de intentos si falla la conexión
 PAUSE_S = 0.8  # Pausa entre descargas (para no saturar a la API)
 
 
@@ -113,7 +112,7 @@ def parse_filters(filters_str: str) -> dict:
     """
     if not filters_str:
         return {}
-    
+
     # Divide el string por "&"
     pairs = [p for p in filters_str.replace(" ", "").split("&") if p]
     q = {}
@@ -126,7 +125,7 @@ def parse_filters(filters_str: str) -> dict:
 
 
 # --------- Helpers (Ayudantes) Eurostat JSON-stat ---------
-# El formato JSON de eurostat es complejo. No devuelve una tabla, sino un cubo de datos comprimido
+# El formato JSON de Eurostat es complejo. No devuelve una tabla, sino un cubo de datos comprimido
 # Estas funciones los "descomprimen".
 def _build_inv_map(dim_obj: dict) -> dict:
     """
@@ -141,7 +140,7 @@ def _build_inv_map(dim_obj: dict) -> dict:
     if "index" in cat and isinstance(cat["index"], dict):
         # Invierte el diccionario {clave:pos}->{pos:clave}
         return {pos: key for key, pos in cat["index"].items()}
-    
+
     # Si no, usa el orden de las "labels" (menos fiable pero funciona)
     labels = list((cat.get("label") or {}).keys())
     return {i: k for i, k in enumerate(labels)}
@@ -156,7 +155,7 @@ def _unravel_index(flat_idx: int, sizes: list[int]) -> list[int]:
     """
     idxs = []
 
-    #Itera al revés por los tamaós de las dimensiones
+    # Itera al revés por los tamaños de las dimensiones
     for size in reversed(sizes):
         idxs.append(flat_idx % size)
         flat_idx //= size
@@ -182,9 +181,9 @@ def fetch_eurostat_table(dataset_code: str, params: dict | None = None) -> pd.Da
             # 2. Reconstrucción del "Cubo de Datos"
             # Necesitamos saber el orden de las dimensiones (ej:[geo, time, sector])
             dim_ids = js.get("id") or list(js.get("dimension", {}).keys())
-            dims = [] # Nombre de las dimensiones
-            inv_maps = {} # Mapas{pos:clave} para cada dimensión
-            sizes = [] # Tamaños de cada dimensión (ej: 27 paises, 10 años)
+            dims = []      # Nombre de las dimensiones
+            inv_maps = {}  # Mapas {pos:clave} para cada dimensión
+            sizes = []     # Tamaños de cada dimensión (ej: 27 países, 10 años)
 
             # 3. Llenamos los metadatos de las dimensiones
             for d in dim_ids:
@@ -231,7 +230,7 @@ def fetch_eurostat_table(dataset_code: str, params: dict | None = None) -> pd.Da
             # B) Si los valores vienen como una lista (formato "flat")
             elif isinstance(values, list):
                 for flat_i, val in enumerate(values):
-                    #Convertimos el índice de la lista (flat_i) a coordenadas
+                    # Convertimos el índice de la lista (flat_i) a coordenadas
                     idxs = _unravel_index(flat_i, sizes)
                     # Construimos la fila
                     rec = {d: inv_maps[d].get(idxs[i], None) for i, d in enumerate(dims)}
@@ -261,7 +260,7 @@ def fetch_eurostat_table(dataset_code: str, params: dict | None = None) -> pd.Da
                 time.sleep(0.7 * attempt)
             else:
 
-                # Intento 2(FallBack): Formato TSV (Separado por Tabuladores)
+                # Intento 2 (FallBack): Formato TSV (Separado por Tabuladores)
                 # Si el JSON falló 3 veces (ej: por ser demasiado grande)
                 # Intentamos descargar el formato TSV, que es más simple
                 try:
@@ -282,8 +281,7 @@ def fetch_eurostat_table(dataset_code: str, params: dict | None = None) -> pd.Da
                     raise last
 
 
-# -------------------- NUEVO: helper de deduplicado (mínimo e inocuo) -------------------- #
-
+# --------- NUEVO: helper de deduplicado (inocuo) ---------
 def _drop_duplicates_safe(df: pd.DataFrame, note: str = "") -> pd.DataFrame:
     """
     Elimina filas duplicadas sin alterar el flujo ni las columnas.
@@ -300,15 +298,14 @@ def _drop_duplicates_safe(df: pd.DataFrame, note: str = "") -> pd.DataFrame:
     return df
 
 
-# -------------------- Guardado -------------------- #
-
+# --------- Guardado (Load) ---------
 def save_csv(df: pd.DataFrame, name: str, out_dir: str):
     """
     Guarda un DataFrame simple como "nombre.csv"
     """
     os.makedirs(out_dir, exist_ok=True)
     # 🔹 NUEVO: limpieza de duplicados antes de guardar
-    df = _drop_duplicates_safe(df, note=f"{name}.csv →")
+    df = _drop_duplicates_safe(df, note=f"{name}.csv")
     path = os.path.join(out_dir, f"{name}.csv")
     df.to_csv(path, index=False, encoding="utf-8")
     print(f"✅ {name}.csv → {path} ({len(df):,} filas)")
@@ -316,8 +313,8 @@ def save_csv(df: pd.DataFrame, name: str, out_dir: str):
 
 def save_part(df: pd.DataFrame, group_name: str, part_idx: int, out_dir: str, source_table: str | None = None):
     """
-    Guarda una parte de un grupo (ej:"eggs_part1.csv")
-    Esto es para descargas de grupos, antes de la fusion
+    Guarda una parte de un grupo (ej:"egss__part1.csv")
+    Esto es para descargas de grupos, antes de la fusión
     """
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, f"{group_name}__part{part_idx}.csv")
@@ -327,18 +324,19 @@ def save_part(df: pd.DataFrame, group_name: str, part_idx: int, out_dir: str, so
         df = df.copy()
         if "source_table" not in df.columns:
             df["source_table"] = source_table
+
     # 🔹 NUEVO: limpieza de duplicados antes de guardar
-    df = _drop_duplicates_safe(df, note=f"{group_name}::part{part_idx} →")
+    df = _drop_duplicates_safe(df, note=f"{group_name}::part{part_idx}")
     df.to_csv(path, index=False, encoding="utf-8")
     print(f"✅ {group_name} :: part{part_idx} ({source_table or ''}) → {path} ({len(df):,} filas)")
 
 
 def merge_parts(group_name: str, out_dir: str):
     """
-    Busca todos los archivos "grupo:part*.csv" y los junta (concatena)
+    Busca todos los archivos "grupo__part*.csv" y los junta (concatena)
     y los guarda como "grupo.csv"
     """
-    import glob # Librería para buscar archivos con patrones (ej:"*")
+    import glob  # Librería para buscar archivos con patrones (ej:"*")
 
     pattern = os.path.join(out_dir, f"{group_name}__part*.csv")
     files = sorted(glob.glob(pattern))
@@ -346,32 +344,31 @@ def merge_parts(group_name: str, out_dir: str):
     if not files:
         print(f"⚠️  {group_name}: no hay parts para fusionar.")
         return
-    
+
     frames = []
     for f in files:
-        df = pd.read_csv(f) # Lee cada parte del csv
+        df = pd.read_csv(f)  # Lee cada parte del csv
         frames.append(df)
 
     # Concatena todos los DataFrames en uno solo
     merged = pd.concat(frames, ignore_index=True)
-    # 🔹 NUEVO: limpieza de duplicados en el merged
-    merged = _drop_duplicates_safe(merged, note=f"{group_name}.csv (merge) →")
+    # 🔹 NUEVO: dedup en el merged final
+    merged = _drop_duplicates_safe(merged, note=f"{group_name}.csv (merge)")
     path = os.path.join(out_dir, f"{group_name}.csv")
     merged.to_csv(path, index=False, encoding="utf-8")
     print(f"🤝 {group_name}.csv (merge) → {path} ({len(merged):,} filas)")
 
 
 # --------- Orquestador de Grupos ---------
-
 def download_group(group_key: str, params: dict, out_dir: str, eager_merge: bool):
     """
     Orquesta la descarga de un grupo de datasets (ej:"egss")
     """
     table_list = DATASET_GROUPS[group_key]
-    
+
     # Añadimos un tracker de fallos
     part_failed = False
-    
+
     for idx, table_code in enumerate(table_list, start=1):
         try:
             df = fetch_eurostat_table(table_code, params=params)
@@ -380,12 +377,12 @@ def download_group(group_key: str, params: dict, out_dir: str, eager_merge: bool
                 part_failed = True  # Marcamos que esta parte falló
                 continue
             save_part(df, group_key, idx, out_dir, source_table=table_code)
-            
+
         except Exception as e:
             # Si fetch_eurostat_table lanza una excepción (ej. 404)
             print(f"❌ Error descargando parte {table_code} del grupo {group_key}: {e}")
-            part_failed = True # Marcamos que esta parte falló
-            
+            part_failed = True  # Marcamos que esta parte falló
+
         finally:
             # Hacemos la pausa siempre, incluso si falló, para no martillear la API
             time.sleep(PAUSE_S)
@@ -397,6 +394,7 @@ def download_group(group_key: str, params: dict, out_dir: str, eager_merge: bool
         else:
             print(f"👍 {group_key}: Todas las partes OK. Procediendo a fusionar.")
             merge_parts(group_key, out_dir)
+
 
 # ======================================================
 # BLOQUE 4: CLI (Punto de Entrada Principal)
@@ -410,14 +408,14 @@ def main():
     # Argumento obligatorio: qué descargar
     ap.add_argument("--datasets", required=True,
                     help="Lista separada por comas (ej. gdp_per_capita,ghg_emissions) o 'all'")
-    
+
     # Argumento opcional: dónde guardar
     ap.add_argument("--out-dir", default=DEFAULT_OUT, help="Directorio de salida (default data/raw/eurostat)")
 
     # Argumento opcional, filtros de API
     ap.add_argument("--filters", default="",
                     help="Filtros API. Ej: \"time=2010:2024&geo=ES,PT,FR\"")
-    
+
     # Argumento opcional (booleano): fusionar grupos
     ap.add_argument("--eager-merge", action="store_true",
                     help="Fusiona las partes de cada grupo en un único CSV (nombre.csv)")
@@ -428,7 +426,7 @@ def main():
     BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     DATA_DIR = os.path.join(BASE_DIR, "data", "eurostat")
 
-    # Si el usuario no especific´´o una ruta, usamos la ruta calculada de Docker/local
+    # Si el usuario no especificó una ruta, usamos la ruta calculada de Docker/local
     if not args.out_dir or args.out_dir == DEFAULT_OUT:
         args.out_dir = DATA_DIR
     os.makedirs(args.out_dir, exist_ok=True)
@@ -443,10 +441,10 @@ def main():
 
         # Si piden datasets específicos (ej:"gdp_per_capita,egss")
         req = [s.strip() for s in args.datasets.split(",") if s.strip()]
-        selected_simple = [s for s in req if s in DATASETS] # Filtramos los simples
-        selected_groups = [s for s in req if s in DATASET_GROUPS] # Filtramos los grupos
+        selected_simple = [s for s in req if s in DATASETS]  # Filtramos los simples
+        selected_groups = [s for s in req if s in DATASET_GROUPS]  # Filtramos los grupos
 
-        # Validación de errores: ¿El usuario pidio algo que no existe?
+        # Validación de errores: ¿El usuario pidió algo que no existe?
         unknown = [s for s in req if s not in DATASETS and s not in DATASET_GROUPS]
         if unknown:
             print(f"❌ Dataset(s) no definidos: {unknown}")
@@ -462,7 +460,7 @@ def main():
         print("   Recomendado: añade al menos 'time=YYYY:YYYY' y/o 'geo=PAISES'")
         print()
 
-    # 4. Resumen de Ejecición (Logs)
+    # 4. Resumen de Ejecución (Logs)
     print("🚀 Eurostat ETL — inicio")
     print(f"   Simples: {selected_simple}")
     print(f"   Grupos:  {selected_groups}")
@@ -501,6 +499,7 @@ def main():
             print(f"❌ Error {gname}: {e}")
 
     print("\n🕒 Fin:", datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC"))
+
 
 # Punto de entrada estándar de Python:
 # Si ejecutamos "python este_script.py", se llama a la función main()
