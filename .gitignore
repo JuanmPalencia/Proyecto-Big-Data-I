@@ -16,6 +16,7 @@ venv/
 *.log
 
 # Ignorar datos pesados o procesados
+data
 data/raw/
 data/intermediate/
 data/tmp/

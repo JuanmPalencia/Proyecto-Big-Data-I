@@ -21,8 +21,8 @@ SCRIPTS = [
     {"file": "eurostat_extract.py",
     "args": [
         "--datasets", "all",
-        "--eager-merge"
-        "--filters", "time=2000:2024&geo=ES,ES300" #ES300 = madrid
+        "--eager-merge",
+        #"--filters", "time=2000:2024&geo=ES,ES300" #ES300 = madrid
         ]
     },
 
