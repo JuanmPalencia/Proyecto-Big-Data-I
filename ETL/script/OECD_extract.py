@@ -178,13 +178,13 @@ DATA_URLS: Dict[str, str] = {
     # Social / bienestar / salud
     # Define la plantilla para "bli_indicators"(Better Life Index)
     "bli_indicators": (
-        f"{BASE}/OECD.SDD.BLI,DSD_BLI@DF_BLI,1.0/"
+        f"{BASE}/BLI/"
         "all?startPeriod={start}&endPeriod={end}&dimensionAtObservation=AllDimensions"
     ),
 
     # Define la plantilla para "regional_wellbeing"(bienestar regional)
     "regional_wellbeing": (
-        f"{BASE}/OECD.SDD.RWB,DSD_RWB@DF_REGIONAL_WELLBEING,1.0/"
+        f"{BASE}/REG_WELL_BEING/"
         "all?startPeriod={start}&endPeriod={end}&dimensionAtObservation=AllDimensions"
     ),
 
