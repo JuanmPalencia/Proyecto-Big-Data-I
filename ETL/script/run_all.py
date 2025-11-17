@@ -60,7 +60,8 @@ SCRIPTS = [
     "args": [
         "--service", "tree_cover", # Servicio de cobertura arbórea
         "--layer", "density", # Capa de densidad (0-100%)
-        "--bbox=-9.4,35.9,3.4,43.8" # Bounding Box (Caja geográfica) que cubre la península ibérica
+        "--bbox=-434145,4891968,-367311,4951156", # Bounding Box (Caja geográfica) que cubre la península ibérica
+        "--size", "2048" # Tamaño de la imagen resultante (en píxeles)
     ]
     },
     {
