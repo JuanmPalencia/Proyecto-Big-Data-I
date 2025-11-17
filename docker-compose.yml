@@ -1,4 +1,5 @@
-version: "3.9"
+# docker-compose --profile etl --profile db up --build ->Ejecuta
+
 
 # docker-compose.yml
 
