@@ -119,11 +119,11 @@ def fetch_page(params: dict) -> dict:
     return r.json()
 
 def fetch_all(collection: str, start_iso: str, end_iso: str, wkt: str | None,
-              top: int = 100, max_pages: int = 5, select: str | None = None,
-              orderby: str = "ContentDate/Start desc", include_count: bool = True) -> dict:
+            top: int = 100, max_pages: int = 5, select: str | None = None,
+            orderby: str = "ContentDate/Start desc", include_count: bool = True) -> dict:
     """
     Trae varias páginas y devuelve un dict con:
-      {"@odata.count": count?, "value": [items...]}
+    {"@odata.count": count?, "value": [items...]}
     Nota: El catálogo soporta $skip; $skiptoken puede no estar disponible.
     """
     params = {
