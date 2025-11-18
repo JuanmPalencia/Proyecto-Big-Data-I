@@ -73,6 +73,12 @@ def get_keycloak(username: str, password: str) -> str:
     # Devuelve el "access_token" extraido del JSON de respuesta
     return r.json()["access_token"]
 
+def refresh_session(session: requests.Session, user: str, pwd: str):
+    """Renueva el token en la sesión actual."""
+    print("Renovando token de acceso (caducado)...") # Sin emoji para evitar error
+    new_token = get_keycloak(user, pwd)
+    session.headers.update({"Authorization": f"Bearer {new_token}"})
+
 # Construye el string del filtro OData para la API
 def make_filter(collection: str, start_iso: str, end_iso: str, wkt: str | None,
                 only_l2a: bool, tile: str | None) -> str:
@@ -172,30 +178,59 @@ def follow_redirects(session: requests.Session, url: str, max_hops: int = 10) ->
 
 
 # Descarga el archivo ZIP completo (el .SAFE)
-def download_product_zip(session: requests.Session, product_id: str, identifier: str, out_dir: str) -> str:
-    """
-    Descarga el .SAFE (ZIP) completo:
-      GET https://catalogue.dataspace.copernicus.eu/odata/v1/Products(<GUID>)/$value
-    """
-    # Crea carpeta de salida si no existe
+def download_product_zip(session: requests.Session, product_id: str, identifier: str, out_dir: str, user: str, pwd: str) -> str:
     os.makedirs(out_dir, exist_ok=True)
-    # Define la ruta del archivo ZIP de salida
     out_zip = os.path.join(out_dir, f"{identifier}.zip")
-    # Si el ZIP ya existe se salta la descarga
+    
+    # 1. Comprobar si ya existe y tiene datos válidos
     if os.path.exists(out_zip):
-        print(f"⏭️  ZIP ya existe, omitiendo descarga: {out_zip}")
-        return out_zip
+        size_mb = os.path.getsize(out_zip) / (1024 * 1024)
+        if size_mb > 1: # Asumimos que un ZIP válido pesa más de 1MB
+            print(f"⏭️ ZIP ya existe ({size_mb:.2f} MB), omitiendo descarga.")
+            return out_zip
+        else:
+            print(f"⚠️ Archivo corrupto o vacío encontrado ({size_mb:.2f} MB). Borrando y re-descargando...")
+            try: os.remove(out_zip)
+            except: pass
 
-    # Contruye la URL de descarga del producto (usando el "product_id"/GUID)
     url = f"{CAT_BASE}({product_id})/$value"
-    # Llama a la funcion que sigue las redirecciones
-    resp = follow_redirects(session, url)
-    resp.raise_for_status() # Comprueba errores en la descarga final
-    # Escribe el contenido de la respuesta (los bytes del ZIP) en el archivo
-    with open(out_zip, "wb") as f:
-        f.write(resp.content)
-    return out_zip
+    
+    # 2. Lógica de descarga con reintentos (Token 401)
+    max_retries = 2
+    for attempt in range(max_retries):
+        resp = follow_redirects(session, url)
+        
+        if resp.status_code == 401:
+            if attempt < max_retries - 1:
+                refresh_session(session, user, pwd)
+                continue
+            else:
+                print(f"❌ Fallo de autenticación (401) tras reintento.")
+                resp.raise_for_status()
+        
+        if resp.status_code != 200:
+            print(f"❌ Error HTTP {resp.status_code} al descargar.")
+            resp.raise_for_status()
+            
+        # 3. Escritura segura en disco
+        content_size = len(resp.content)
+        print(f"   💾 Escribiendo en disco ({content_size / (1024*1024):.2f} MB)...")
+        
+        with open(out_zip, "wb") as f:
+            f.write(resp.content)
+            f.flush()             # Vaciar búfer interno de Python
+            os.fsync(f.fileno())  # Forzar al S.O. a escribir en disco físico
+        break 
+    
+    # 4. Verificación final paranoica
+    if not os.path.exists(out_zip):
+        raise RuntimeError(f"❌ ERROR CRÍTICO: El archivo {out_zip} NO aparece en el disco tras la escritura.")
+        
+    final_size = os.path.getsize(out_zip)
+    if final_size == 0:
+        raise RuntimeError(f"❌ ERROR CRÍTICO: El archivo se creó pero está VACÍO (0 bytes).")
 
+    return out_zip
 # --- Funciones de Extracción (ZIP) ---
 
 # Construye una lista de patrones de busqueda (ej:"*TCI*.jp2") segun el modo y bandas
@@ -487,7 +522,7 @@ def main():
         try:
             # 1. Descarga el archivo ZIP (o lo salta si ya existe)
             print(f"\n[{identifier}] Descargando ZIP completo…")
-            zip_path = download_product_zip(session, pid, identifier, args.out_dir)
+            zip_path = download_product_zip(session, pid, identifier, args.out_dir, user, pwd)
             print(f"[{identifier}] ZIP guardado en: {zip_path}")
 
             # 2. Extrae los archios especificos (TCI,SCL o Bandas)
