@@ -15,39 +15,40 @@ SCRIPTS = [
     # # ===========================================================
 
     # 1. PIB INE: Extrae datos macroeconómicos de España
-    {"file": "pib_ine_extract.py", "args": []},
+#    {"file": "pib_ine_extract.py", "args": []},
 
     # 2. Eurostat: Datos a nivel europeo para commparativa
-    {"file": "eurostat_extract.py",
-    "args": [
-        "--datasets", "all",
-        "--eager-merge",
+#    {"file": "eurostat_extract.py",
+#    "args": [
+#        "--datasets", "all",
+#        "--eager-merge",
         #"--filters", "time=2000:2024&geo=ES,ES300" #ES300 = madrid
-        ]
-    },
+#        ]
+#    },
+
 
     # 3. OECD: Datos globales de desarrollo
     # Se configuran "penalties" (esperas) para evitar el error HTTP 429 (Too Many Requests)
-    {"file": "OECD_extract.py",
-    "args": [
-        "--pause", "300",
-        "--penalty-429", "300,600,1200"
-        ]
-    },
+#    {"file": "OECD_extract.py",
+#    "args": [
+#        "--pause", "300",
+#        "--penalty-429", "300,600,1200"
+#        ]
+#    },
 
     # 4. InvestEU: Datos específicos de inversión en proyectos (clave para detectar financiación ambiental)
     # Se invectan variables de entorno (env) para controlar la agresividad de las peticiones
-    {"file": "InvestEU_extract.py",
-    "args": [
-        "--what", "all"
-        ],
-    "env": {
-        "INVESTEU_BASE_SLEEP": "300", # Espera base entre peticiones
-        "INVESTEU_429_PENALTIES": "300,600,1200", # Penalización exponencial si nos bloquean
-        "INVESTEU_TIMEOUT": "90", # Tiempo máximo de espera por respuesta antes de dar error
-        "INVESTEU_MAX_RETRIES": "3" # Número de reintentos permitidos
-        }
-    },
+#    {"file": "InvestEU_extract.py",
+#    "args": [
+#        "--what", "all"
+#        ],
+#    "env": {
+#        "INVESTEU_BASE_SLEEP": "300", # Espera base entre peticiones
+#        "INVESTEU_429_PENALTIES": "300,600,1200", # Penalización exponencial si nos bloquean
+#        "INVESTEU_TIMEOUT": "90", # Tiempo máximo de espera por respuesta antes de dar error
+#        "INVESTEU_MAX_RETRIES": "3" # Número de reintentos permitidos
+#        }
+#    },
 
 
     # ---2.FUENTES DE OBSERVACIÓN TERRESTRE (Contexto estructural)---
@@ -58,20 +59,20 @@ SCRIPTS = [
     {
     "file": "HRL_extract.py", 
     "args": [
-        "--service", "tree_cover", # Servicio de cobertura arbórea
-        "--layer", "density", # Capa de densidad (0-100%)
+        "--service=tree_cover", # Servicio de cobertura arbórea
+        "--layer=density", # Capa de densidad (0-100%)
         "--bbox=-434145,4891968,-367311,4951156", # Bounding Box (Caja geográfica) que cubre la península ibérica
-        "--size", "2048" # Tamaño de la imagen resultante (en píxeles)
+        "--size=2048" # Tamaño de la imagen resultante (en píxeles)
     ]
     },
     {
     "file": "HRL_extract.py",
     "args": [
-        "--service", "impervious",
-        "--layer", "density",
+        "--service=impervious",
+        "--layer=density",
         # Misma BBOX en EPSG:3857 (Mercator)
-        "--bbox", "-434145,4891968,-367311,4951156",
-        "--size", "2048"
+        "--bbox=-434145,4891968,-367311,4951156",
+        "--size=2048"
     ]
     },
 
