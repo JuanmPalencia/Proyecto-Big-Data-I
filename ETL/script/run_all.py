@@ -88,7 +88,7 @@ SCRIPTS = [
             "--aoi", "madrid", # Área de interés: Madrid
             "--asset", "tci", # True Color Image (Imagen en color real)
             "--days-back", "365", # Ventana temporal: Últumo mes
-            "--max-downloads", "15", # Limitamos descargas oara ahorrar espacio/tiempo en prueba
+            "--max-downloads", "50", # Limitamos descargas oara ahorrar espacio/tiempo en prueba
             "--download"
         ]
     },
@@ -101,7 +101,7 @@ SCRIPTS = [
             "--aoi", "madrid",
             "--asset", "scl",         # Scene Classification Layer (Mapa de clasificacióon de píxeles)
             "--days-back", "365",     # Histírico de un año para ver estacionalidad
-            "--max-downloads", "15",
+            "--max-downloads", "50",
             "--download"
         ]
     },
@@ -114,7 +114,7 @@ SCRIPTS = [
             "--aoi", "madrid",
             "--bands", "B04,B08",     # Rojo (B04) + Infrarrojo cercano (B08) = NDVI
             "--days-back", "365",     # Debe coincidir con el periodo del SCL para poder cruzarlos
-            "--max-downloads", "15",
+            "--max-downloads", "50",
             "--download"
         ]
     }

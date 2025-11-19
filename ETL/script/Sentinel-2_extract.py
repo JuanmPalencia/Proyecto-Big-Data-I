@@ -396,19 +396,16 @@ def parse_args():
 # ======================================================
 
 def main():
-    # Carga las variables del archivo .env (COPERNICUS_USER/PASSWORD)
     load_dotenv()
-    # Lee los argumentos de la terminal
     args = parse_args()
 
-    # --- CONFIGURACIÓN DE RUTAS ---
-    # Define DATA_DIR basado en el Directorio de Trabajo Actual
+    # --- RUTAS BASE ---
     DATA_DIR = os.path.join(os.getcwd(), "data", "s2")
     os.makedirs(DATA_DIR, exist_ok=True)
     args.out_dir = DATA_DIR
     args.csv = os.path.join(DATA_DIR, os.path.basename(args.csv))
 
-    # --- Lógica de AOI ---
+    # --- AOI ---
     if args.aoi == "custom":
         if not args.wkt:
             print("ERROR: --aoi custom requiere --wkt", file=sys.stderr)
@@ -417,7 +414,7 @@ def main():
     else:
         wkt = AOIS.get(args.aoi, AOIS["tiny"])
 
-    # --- Búsqueda de Metadatos ---
+    # --- BÚSQUEDA ---
     today_iso, start_iso = today_and_start(args.days_back)
     print(f"Consulta: {start_iso} -> {today_iso} | AOI: {args.aoi}")
 
@@ -443,7 +440,7 @@ def main():
     if not args.download:
         return
 
-    # --- Autenticación ---
+    # --- AUTH ---
     try:
         user = ensure_env("COPERNICUS_USER")
         pwd = ensure_env("COPERNICUS_PASSWORD")
@@ -455,7 +452,7 @@ def main():
     session = requests.Session()
     session.headers.update({"Authorization": f"Bearer {token}"})
 
-    # --- Configuración de Modo ---
+    # --- MODO ---
     bands = None
     mode = "tci"
     if args.bands:
@@ -464,22 +461,22 @@ def main():
     elif args.asset:
         mode = args.asset.lower()
 
-    # --- [CAMBIO 1] DEFINIR CARPETAS ---
+    # --- DEFINIR SOLO LA CATEGORÍA BASE ---
     zips_dir = os.path.join(args.out_dir, "zips")
     
     if mode == "tci":
-        target_extract_dir = os.path.join(args.out_dir, "TCI_Visual")
+        category_folder = "TCI_Visual"
     elif mode == "scl":
-        target_extract_dir = os.path.join(args.out_dir, "SCL_Nubes")
+        category_folder = "SCL_Nubes"
     else:
-        target_extract_dir = os.path.join(args.out_dir, "NDVI_Bandas")
+        category_folder = "NDVI_Bandas"
 
+    # Creamos solo la de ZIPs ahora, las otras se crean dinámicamente
     os.makedirs(zips_dir, exist_ok=True)
-    os.makedirs(target_extract_dir, exist_ok=True)
     
     print(f"Organizacion:")
     print(f"   - ZIPs:      {zips_dir}")
-    print(f"   - Destino:   {target_extract_dir}")
+    print(f"   - Categoría: {category_folder}/<FECHA>/")
 
     downloaded = 0
     for item in js.get("value", []):
@@ -490,20 +487,29 @@ def main():
         identifier = name.split(".")[0] if name else pid
         if not pid: continue
 
+        # --- EXTRAER FECHA PARA LA CARPETA ---
+        # La fecha viene como '2023-11-15T10:20:00.000Z'
+        # Cogemos solo los primeros 10 caracteres: '2023-11-15'
+        content_date = item.get("ContentDate", {}).get("Start", "")
+        date_folder_name = content_date[:10] if content_date else "unknown_date"
+        
+        # Construimos la ruta final: data/s2/TCI_Visual/2023-11-15
+        final_target_dir = os.path.join(args.out_dir, category_folder, date_folder_name)
+        # ---------------------------------------------
+
         try:
-            print(f"\n[{identifier}] Procesando...")
+            print(f"\n[{identifier}] Procesando ({date_folder_name})...")
             
-            # --- [CAMBIO 2] USAR CARPETAS ---
-            # Descargar en zips_dir (reutilizando si existe)
+            # 1. Descargar (reutilizando ZIP común)
             zip_path = download_product_zip(session, pid, identifier, zips_dir, user, pwd)
             
-            print(f"[{identifier}] Extrayendo {mode} en {os.path.basename(target_extract_dir)}...")
+            print(f"[{identifier}] Extrayendo {mode} en {date_folder_name}...")
             
-            # Extraer en target_extract_dir
-            extracted = extract_selected_from_zip(zip_path, mode, bands, target_extract_dir)
+            # 2. Extraer (Usando la nueva carpeta con fecha)
+            extracted = extract_selected_from_zip(zip_path, mode, bands, final_target_dir)
             
             if extracted:
-                print(f"[{identifier}] OK: {len(extracted)} archivos extraidos.")
+                print(f"[{identifier}] OK: {len(extracted)} archivos.")
             
             downloaded += 1
             time.sleep(0.5)
