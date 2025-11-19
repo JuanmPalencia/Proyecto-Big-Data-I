@@ -313,7 +313,7 @@ def extract_selected_from_zip(zip_path: str, mode: str, bands: list[str] | None,
             return [] # Devuelve una lista vacia
 
         # Define la carpeta de salida
-        base_out = os.path.join(os.path.dirname(zip_path), os.path.splitext(os.path.basename(zip_path))[0], "extracted")
+        base_out = out_dir
         os.makedirs(base_out, exist_ok=True) # Crea la carpeta si no existe
 
         # ITERA SOBRE LOS ARCHIVOS ENCONTRADOS
@@ -398,159 +398,120 @@ def parse_args():
 def main():
     # Carga las variables del archivo .env (COPERNICUS_USER/PASSWORD)
     load_dotenv()
-    # Lee los argumentos de laterminal (ej. --aoi madrid --asset tci ...)
+    # Lee los argumentos de la terminal
     args = parse_args()
 
-    # --- Configuracion de rutas ---
-    # Define DATA_DIR basado en el Directorio de Trabajo Actual (donde ejecutas el comando)
+    # --- CONFIGURACIÓN DE RUTAS ---
+    # Define DATA_DIR basado en el Directorio de Trabajo Actual
     DATA_DIR = os.path.join(os.getcwd(), "data", "s2")
     os.makedirs(DATA_DIR, exist_ok=True)
-    # Sobrescrive el argumenot "out_dir" con esta ruta
     args.out_dir = DATA_DIR
-    # Sobrescrive el argumento "csv" con esta ruta
     args.csv = os.path.join(DATA_DIR, os.path.basename(args.csv))
 
-    # --- Lógica de AOI (Area de Interes) ---
-    if args.aoi == "custom": # Si el usuario quiere un poligono personalizado
-        if not args.wkt: # Comprueba que haya pasado el WKT
-            print("ERROR: --aoi custom requiere --wkt 'POLYGON((...))'", file=sys.stderr)
-            sys.exit(2) # Cierra el script con codigo de error
+    # --- Lógica de AOI ---
+    if args.aoi == "custom":
+        if not args.wkt:
+            print("ERROR: --aoi custom requiere --wkt", file=sys.stderr)
+            sys.exit(2)
         wkt = args.wkt
-    else: # Si el usuario eligio "madrid" o "tiny"
-        wkt = AOIS[args.aoi] # Lo busca en el diccionario AOIS
+    else:
+        wkt = AOIS.get(args.aoi, AOIS["tiny"])
 
     # --- Búsqueda de Metadatos ---
-    # Obtiene las fechas de inicio y fin
     today_iso, start_iso = today_and_start(args.days_back)
-    # Imprime un resumen de la consulta
-    print("→ Consulta OData…")
-    print("Colección:", args.collection)
-    print("Ventana:  ", f"{start_iso} → {today_iso}")
-    print("AOI:      ", args.aoi)
-    print("Solo L2A: ", args.only_l2a)
-    if args.tile:
-        print("Tile:     ", args.tile)
-    print()
+    print(f"Consulta: {start_iso} -> {today_iso} | AOI: {args.aoi}")
 
-    # Llama a la función que descarga TODAS las paginas de metadatos
     js = fetch_all(
-        collection=args.collection,
-        start_iso=start_iso,
-        end_iso=today_iso,
-        wkt=wkt,
-        top=args.top,
-        max_pages=args.max_pages,
-        orderby=args.orderby,
-        include_count=True,
-        only_l2a=args.only_l2a,
-        tile=args.tile,
-        select=args.select
+        collection=args.collection, start_iso=start_iso, end_iso=today_iso, wkt=wkt,
+        top=args.top, max_pages=args.max_pages, orderby=args.orderby,
+        include_count=True, only_l2a=args.only_l2a, tile=args.tile, select=args.select
     )
-    # Imprime el Nº total de productos encontradso
+    
     if "@odata.count" in js:
-        print("Total (count) filtro:", js["@odata.count"])
-    # Convierte el JSON de metadatos en un DataFrame de Pandas
+        print("Total encontrados:", js["@odata.count"])
+
     df = to_flat_df(js)
-    # Si no se encontro nada, termina
     if df.empty:
-        print("No hay productos para este filtro.")
+        print("No hay productos.")
         return
 
-    # Imprime una muestra de los 10 primeros productos
-    print("\n— Primeros productos —")
-    cols = [c for c in ["Id", "Name", "ContentDate.Start"] if c in df.columns]
-    print(df[cols].head(10))
-
-    # Intenta guardar el DataFrame de metadatos en un CSV
     try:
         df.to_csv(args.csv, index=False)
-        print(f"\nCSV guardado: {args.csv} (filas: {len(df)})")
-    except Exception as e:
-        print(f"Advertencia al escribir CSV: {e}")
+        print(f"CSV guardado: {args.csv}")
+    except Exception: pass
 
-    # Si no se paso el flag --download, termina aqui
     if not args.download:
-        print("\nDescarga desactivada (usa --download).")
         return
 
-    # --- Lógica de descarga (requiere--download) ---
-    # Intenta cargar las credenciales del .env
+    # --- Autenticación ---
     try:
         user = ensure_env("COPERNICUS_USER")
         pwd = ensure_env("COPERNICUS_PASSWORD")
-    except RuntimeError as e: # Si fallan 
-        print(f"Descarga deshabilitada: {e}")
-        return # Termina
-
-    # Intenta obtener el token de autenticación
-    try:
-        token = get_keycloak(user, pwd) # si falla el login
+        token = get_keycloak(user, pwd)
     except Exception as e:
-        print(f"Error de autenticación: {e}")
-        return # Termina
+        print(f"Error auth: {e}")
+        return
 
-    # Crea una "sesion" de requests (para reusar la conexion y el token)
     session = requests.Session()
-    # Añade el token a las cabeceras de todas las peticiones futuras de esta sesion
     session.headers.update({"Authorization": f"Bearer {token}"})
 
-    # --- Determina el modo de extraccion (TCI, SCL, o bandas) ---
+    # --- Configuración de Modo ---
     bands = None
-    mode = "tci" # TCI es el modo por defecto si no se especifica
-    if args.bands: # Si el usuario pasó --bandas B04,B08
+    mode = "tci"
+    if args.bands:
         bands = [s.strip() for s in args.bands.split(",") if s.strip()]
         mode = "bands"
-    elif args.asset: # Si el usuario pasó --aset scl
+    elif args.asset:
         mode = args.asset.lower()
 
-    # --- Bucle de descarga y extracción ---
-    downloaded = 0 # Contador de descargas
-    # Itera sobre la lista de productos (metadatos)
+    # --- [CAMBIO 1] DEFINIR CARPETAS ---
+    zips_dir = os.path.join(args.out_dir, "zips")
+    
+    if mode == "tci":
+        target_extract_dir = os.path.join(args.out_dir, "TCI_Visual")
+    elif mode == "scl":
+        target_extract_dir = os.path.join(args.out_dir, "SCL_Nubes")
+    else:
+        target_extract_dir = os.path.join(args.out_dir, "NDVI_Bandas")
+
+    os.makedirs(zips_dir, exist_ok=True)
+    os.makedirs(target_extract_dir, exist_ok=True)
+    
+    print(f"Organizacion:")
+    print(f"   - ZIPs:      {zips_dir}")
+    print(f"   - Destino:   {target_extract_dir}")
+
+    downloaded = 0
     for item in js.get("value", []):
-        # Si ya hemos alcanzado el limite de --max-downloads, paramos
-        if downloaded >= args.max_downloads:
-            break
-        # Obtiene el ID (GUID) y el Nombre del producto
+        if downloaded >= args.max_downloads: break
+        
         pid = item.get("Id")
         name = item.get("Name", "")
-        # Crea un identificador
-        identifier = name.split(".")[0] if isinstance(name, str) and name else pid
-        if not pid: # Si no hay id salta al siguiente
-            continue
+        identifier = name.split(".")[0] if name else pid
+        if not pid: continue
 
-        # Inicia un bloque "try" para capturar errores de este producto
         try:
-            # 1. Descarga el archivo ZIP (o lo salta si ya existe)
-            print(f"\n[{identifier}] Descargando ZIP completo…")
-            zip_path = download_product_zip(session, pid, identifier, args.out_dir, user, pwd)
-            print(f"[{identifier}] ZIP guardado en: {zip_path}")
-
-            # 2. Extrae los archios especificos (TCI,SCL o Bandas)
-            print(f"[{identifier}] Extrayendo '{mode}' (bandas={bands})…")
-            extracted = extract_selected_from_zip(zip_path, mode, bands, args.out_dir)
-
-            # Informa del resultado de la extraccion
-            if not extracted:
-                print(f"[{identifier}] ⚠️  No se extrajo nada que coincida con el modo.")
-            else:
-                print(f"[{identifier}] ✅ Extraídos {len(extracted)} archivos.")
-
-            # Incrementa el contador de descargas
+            print(f"\n[{identifier}] Procesando...")
+            
+            # --- [CAMBIO 2] USAR CARPETAS ---
+            # Descargar en zips_dir (reutilizando si existe)
+            zip_path = download_product_zip(session, pid, identifier, zips_dir, user, pwd)
+            
+            print(f"[{identifier}] Extrayendo {mode} en {os.path.basename(target_extract_dir)}...")
+            
+            # Extraer en target_extract_dir
+            extracted = extract_selected_from_zip(zip_path, mode, bands, target_extract_dir)
+            
+            if extracted:
+                print(f"[{identifier}] OK: {len(extracted)} archivos extraidos.")
+            
             downloaded += 1
-            time.sleep(0.3) # Pausa breve
+            time.sleep(0.5)
 
-        # Captura de errores específicos de esta descarga
-        except requests.HTTPError as he:
-            print(f"[{identifier}] Error HTTP al descargar/extraer: {he}")
         except Exception as e:
             print(f"[{identifier}] Error: {e}")
 
-# --- Resumen Final ---
-
-    if downloaded == 0:
-        print("\nNo se descargaron ZIPs (revisa token, filtros o estado online/offline).")
-    else:
-        print(f"\n✅ Listo. Productos procesados: {downloaded}")
+    print(f"\nListo. Procesados: {downloaded}")
 
 # --- Punto de Entrada del Script ---
 # Si el script se ejecuta directamente (python Sentinel-2_extract.py)

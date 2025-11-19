@@ -56,25 +56,25 @@ SCRIPTS = [
 
     # 5. HRL (High Resolution Layers): Producto de copernicus que ya indica densidad arbórea
     # Sirve como "Ground Truth" (verdad terreno) para validar nuestros cálculos de Sentinel
-    {
-    "file": "HRL_extract.py", 
-    "args": [
-        "--service=tree_cover", # Servicio de cobertura arbórea
-        "--layer=density", # Capa de densidad (0-100%)
-        "--bbox=-434145,4891968,-367311,4951156", # Bounding Box (Caja geográfica) que cubre la península ibérica
-        "--size=2048" # Tamaño de la imagen resultante (en píxeles)
-    ]
-    },
-    {
-    "file": "HRL_extract.py",
-    "args": [
-        "--service=impervious",
-        "--layer=density",
-        # Misma BBOX en EPSG:3857 (Mercator)
-        "--bbox=-434145,4891968,-367311,4951156",
-        "--size=2048"
-    ]
-    },
+#    {
+#    "file": "HRL_extract.py", 
+#    "args": [
+#        "--service=tree_cover", # Servicio de cobertura arbórea
+#        "--layer=density", # Capa de densidad (0-100%)
+#        "--bbox=-434145,4891968,-367311,4951156", # Bounding Box (Caja geográfica) que cubre la península ibérica
+#        "--size=2048" # Tamaño de la imagen resultante (en píxeles)
+#    ]
+#    },
+#    {
+#    "file": "HRL_extract.py",
+#    "args": [
+#        "--service=impervious",
+#        "--layer=density",
+#        # Misma BBOX en EPSG:3857 (Mercator)
+#        "--bbox=-434145,4891968,-367311,4951156",
+#        "--size=2048"
+#    ]
+#    },
 
     # --- 3. SENTINEL-2 (Variables deependientes / Eje Y) ---
     # # ===========================================================
@@ -88,7 +88,7 @@ SCRIPTS = [
             "--aoi", "madrid", # Área de interés: Madrid
             "--asset", "tci", # True Color Image (Imagen en color real)
             "--days-back", "365", # Ventana temporal: Últumo mes
-            "--max-downloads", "50", # Limitamos descargas oara ahorrar espacio/tiempo en prueba
+            "--max-downloads", "15", # Limitamos descargas oara ahorrar espacio/tiempo en prueba
             "--download"
         ]
     },
@@ -101,7 +101,7 @@ SCRIPTS = [
             "--aoi", "madrid",
             "--asset", "scl",         # Scene Classification Layer (Mapa de clasificacióon de píxeles)
             "--days-back", "365",     # Histírico de un año para ver estacionalidad
-            "--max-downloads", "50",
+            "--max-downloads", "15",
             "--download"
         ]
     },
@@ -114,7 +114,7 @@ SCRIPTS = [
             "--aoi", "madrid",
             "--bands", "B04,B08",     # Rojo (B04) + Infrarrojo cercano (B08) = NDVI
             "--days-back", "365",     # Debe coincidir con el periodo del SCL para poder cruzarlos
-            "--max-downloads", "50",
+            "--max-downloads", "15",
             "--download"
         ]
     }
