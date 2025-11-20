@@ -75,6 +75,12 @@ SCRIPTS = [
 #        "--size=2048"
 #    ]
 #    },
+    # 9. Yahoo Finance (Datos de Mercado 2018)
+    # Extrae indicadores de empresas energéticas clave para comparar con HRL 2018.
+#    {
+#        "file": "YFinance_extract.py",
+#        "args": ["--what", "finance", "--out-dir", "data/finance"]
+#    },
 
     # --- 3. SENTINEL-2 (Variables deependientes / Eje Y) ---
     # # ===========================================================
@@ -88,7 +94,7 @@ SCRIPTS = [
             "--aoi", "madrid", # Área de interés: Madrid
             "--asset", "tci", # True Color Image (Imagen en color real)
             "--days-back", "365", # Ventana temporal: Últumo mes
-            "--max-downloads", "50", # Limitamos descargas oara ahorrar espacio/tiempo en prueba
+            "--max-downloads", "100", # Limitamos descargas oara ahorrar espacio/tiempo en prueba
             "--download"
         ]
     },
@@ -101,7 +107,7 @@ SCRIPTS = [
             "--aoi", "madrid",
             "--asset", "scl",         # Scene Classification Layer (Mapa de clasificacióon de píxeles)
             "--days-back", "365",     # Histírico de un año para ver estacionalidad
-            "--max-downloads", "50",
+            "--max-downloads", "100",
             "--download"
         ]
     },
@@ -114,7 +120,7 @@ SCRIPTS = [
             "--aoi", "madrid",
             "--bands", "B04,B08",     # Rojo (B04) + Infrarrojo cercano (B08) = NDVI
             "--days-back", "365",     # Debe coincidir con el periodo del SCL para poder cruzarlos
-            "--max-downloads", "50",
+            "--max-downloads", "100",
             "--download"
         ]
     }
