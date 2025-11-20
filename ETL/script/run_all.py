@@ -123,7 +123,26 @@ SCRIPTS = [
             "--max-downloads", "100",
             "--download"
         ]
+    },
+
+    # ---------------------------------------------------------
+    # 8. Sentinel-5P (Calidad del Aire - NO2)
+    # ---------------------------------------------------------
+    # Descarga niveles de Dióxido de Nitrógeno (contaminación tráfico/industria)
+    # Formato: Archivos NetCDF (.nc) en data/s5p
+    {
+        "file": "Sentinel-5P_extract.py",
+        "args": [
+            "--aoi", "madrid",
+            "--product", "L2__NO2___", # Gas específico
+            "--days-back", "365",      # Un año de historial
+            "--max-downloads", "50",   # Límite para no saturar
+            "--download"
+        ]
     }
+
+
+
 ]
 
 # ======================================================
