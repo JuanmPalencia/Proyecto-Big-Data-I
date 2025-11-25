@@ -130,7 +130,7 @@ SCRIPTS = [
     # Descarga niveles de Dióxido de Nitrógeno (contaminación tráfico/industria)
     # Formato: Archivos NetCDF (.nc) en data/s5p
     {
-        "file": "Sentinel-5P_extract.py",
+        "file": "Sentinel-5p_extract.py",
         "args": [
             "--aoi", "madrid",
             "--product", "L2__NO2___", # Gas específico
