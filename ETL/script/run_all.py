@@ -88,42 +88,41 @@ SCRIPTS = [
 
     # 6. Sentinel-2: Capa visual (TCI) 
     # Objetivo: Generar evidencia visual para la memoria del proyecto
-    {
-        "file": "Sentinel-2_extract.py",
-        "args": [
-            "--aoi", "madrid", # Área de interés: Madrid
-            "--asset", "tci", # True Color Image (Imagen en color real)
-            "--days-back", "365", # Ventana temporal: Últumo mes
-            "--max-downloads", "100", # Limitamos descargas oara ahorrar espacio/tiempo en prueba
-            "--download"
-        ]
-    },
+#    {
+#        "file": "Sentinel-2_extract.py",
+#        "args": [
+#            "--aoi", "madrid", # Área de interés: Madrid
+#            "--asset", "tci", # True Color Image (Imagen en color real)
+#            "--days-back", "365", # Ventana temporal: Últumo mes
+#            "--max-downloads", "100", # Limitamos descargas oara ahorrar espacio/tiempo en prueba
+#            "--download"
+#        ]
+#    },
 
     # 7. Sentinel-2: Capa de Calidad(SCL)
     # Objetivo: Data Cleaning. Crear una máscara para eliminar píxeles con nubes o nieve
-    {
-        "file": "Sentinel-2_extract.py",
-        "args": [
-            "--aoi", "madrid",
-            "--asset", "scl",         # Scene Classification Layer (Mapa de clasificacióon de píxeles)
-            "--days-back", "365",     # Histírico de un año para ver estacionalidad
-            "--max-downloads", "100",
-            "--download"
-        ]
-    },
+#    {
+#        "file": "Sentinel-2_extract.py",
+#        "args": [
+#            "--aoi", "madrid",
+#            "--asset", "scl",         # Scene Classification Layer (Mapa de clasificacióon de píxeles)
+#            "--days-back", "365",     # Histírico de un año para ver estacionalidad
+#            "--max-downloads", "100",
+#            "--download"
+#        ]
+#    },
 
     # 8. Sentinel-2; Capa Científica (Bandas Espectrales).
     # Objetivo: Cálculo del KPI ambiental. Bandas necesarias para la fórmula NDVI = (NIR - RED) / (NIR + RED)
-    {
-        "file": "Sentinel-2_extract.py",
-        "args": [
-            "--aoi", "madrid",
-            "--bands", "B04,B08",     # Rojo (B04) + Infrarrojo cercano (B08) = NDVI
-            "--days-back", "365",     # Debe coincidir con el periodo del SCL para poder cruzarlos
-            "--max-downloads", "100",
-            "--download"
-        ]
-    },
+#    {
+#        "file": "Sentinel-2_extract.py",
+#        "args": [
+#            "--aoi", "madrid",
+#            "--bands", "B04,B08",     # Debe coincidir con el periodo del SCL para poder cruzarlos
+#            "--max-downloads", "100",
+#            "--download"
+#        ]
+#    },
 
     # ---------------------------------------------------------
     # 8. Sentinel-5P (Calidad del Aire - NO2)
