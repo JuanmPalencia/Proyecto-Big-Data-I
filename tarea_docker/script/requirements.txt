@@ -1,8 +1,0 @@
-requests
-PyMySQL
-python-dateutil
-openmeteo_requests
-requests_cache
-retry_requests
-pandas
-numpy

@@ -1,0 +1,48 @@
+# Dataset 1 – Tree Cover Density 2021 (Europa)
+dataset_id: hrl_tcd_2021_10m_100m_europe  
+download_url: https://land.copernicus.eu/en/products/high-resolution-layer-forests-and-tree-cover/tree-cover-density-2021-raster-10-m-100-m-europe-yearly  
+format: GeoTIFF (raster)  
+resolution: 10 m, 100 m :contentReference[oaicite:0]{index=0}  
+crs: EPSG:3035 (y otras variantes listadas) :contentReference[oaicite:1]{index=1}  
+year: 2021  
+unit: % de cobertura de copa de árboles  
+license: © European Union, Copernicus Land Monitoring Service  
+citation: “Copernicus Land Monitoring Service. Tree Cover Density 2021, Europe, yearly, raster 10 m/100 m.”  
+notes: Cobertura europea, producto validado. :contentReference[oaicite:2]{index=2}
+
+# Dataset 2 – Imperviousness Density 2021 (Europa)  
+dataset_id: hrl_imd_2021_europe  
+download_url: https://land.copernicus.eu/en/products/high-resolution-layer-imperviousness  
+format: GeoTIFF (raster)  
+resolution: 20 m (y/o 10 m/100 m según versión) :contentReference[oaicite:3]{index=3}  
+crs: EPSG:3035 :contentReference[oaicite:4]{index=4}  
+year: 2021 (según el documento “Algorithm Theoretical Basis” para 2021) :contentReference[oaicite:5]{index=5}  
+unit: % de superficie impermeabilizada  
+license: © European Union, Copernicus Land Monitoring Service  
+citation: “Copernicus Land Monitoring Service. High Resolution Layer Imperviousness Density 2021, Europe.”  
+notes: Verificar que efectivamente la versión de 2021 esté publicada como “Density” (algunas versiones anteriores son 2018) :contentReference[oaicite:6]{index=6}
+
+# Dataset 3 – Grasslands Change 2018-2021  
+dataset_id: hrl_grasslands_2018_2021_europe  
+download_url: https://land.copernicus.eu/en/products/high-resolution-layer-grasslands  
+format: GeoTIFF  
+resolution: 20 m :contentReference[oaicite:7]{index=7}
+crs: EPSG:3035  
+year: “2018-2021” (serie de cambio)  
+unit: categoría tipológica/uso de suelo (grassland)  
+license: © European Union, Copernicus Land Monitoring Service  
+citation: “Copernicus Land Monitoring Service. High Resolution Layer Grassland Change 2018-2021, Europe, raster 20 m.”  
+notes: Producto multitemporal de cambio, requiere confirmar descarga.
+
+# Dataset 4 – Small Woody Features 2021  
+dataset_id: hrl_swf_2021_europe  
+download_url: https://land.copernicus.eu/en/products/high-resolution-layer-small-landscape-features/small-woody-features-2021  
+format: GeoTIFF  
+resolution: — (ver especificación del producto)
+crs: EPSG:3035
+year: 2021
+unit: presencia/índice de elementos leñosos menores (“small woody features”)
+license: © European Union, Copernicus Land Monitoring Service
+citation: “Copernicus Land Monitoring Service. High Resolution Layer Small Woody Features 2021, Europe.”
+notes: Necesario verificar metadatos y URL directa de descarga.
+

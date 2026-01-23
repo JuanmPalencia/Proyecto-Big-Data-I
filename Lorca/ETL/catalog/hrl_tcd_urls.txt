@@ -1,0 +1,2 @@
+https://download.clms.land.copernicus.eu/download/hrl/tcd/2021/HRL_TCD_2021_10m_EPSG3035_V1_0.zip
+https://download.clms.land.copernicus.eu/download/hrl/tcd/2021/HRL_TCD_2021_100m_EPSG3035_V1_0.zip

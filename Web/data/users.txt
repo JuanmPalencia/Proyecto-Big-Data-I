@@ -1,1 +1,0 @@
-{"name": "Juan M", "last": "Palencia", "email": "juanmapalencia23@gmail.com", "pass_hash": "d5b3e4703914008b7757548cd5d42a8f5f1505209bb46345dc0bfd0416acc409", "birth": "2005-02-22", "dni": "", "created_at": "2025-11-12T02:52:16.804862Z"}

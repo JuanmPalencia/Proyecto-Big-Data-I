@@ -1,0 +1,2 @@
+https://download.clms.land.copernicus.eu/development/hrl/imperviousness/2021/HRL_IMD_2021_10m_EPSG3035_v1_0.zip
+https://download.clms.land.copernicus.eu/development/hrl/imperviousness/2021/HRL_IMD_2021_100m_EPSG3035_v1_0.zip
