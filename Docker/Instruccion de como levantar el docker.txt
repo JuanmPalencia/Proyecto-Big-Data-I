@@ -1,0 +1,7 @@
+cd "/home/223B3336juan/Big Data I/Proyecto-Big-Data-I"
+export POSTGRES_DB=gtp
+export POSTGRES_USER=gtp_user
+export POSTGRES_PASSWORD=gtp_pass
+export POSTGRES_PORT=5432
+
+python3 "ETL/script/gtp_spark_to_postgres.py"
