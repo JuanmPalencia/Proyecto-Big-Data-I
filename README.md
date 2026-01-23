@@ -1,13 +1,12 @@
-# Proyecto Big Data I
+# Green Turning Point (GTP)
 
-## Información académica
+## Proyecto Big Data I
 
+**Grado:** Ingeniería Matemática aplicada al Análisis de Datos
+**Curso:** 3º
 **Universidad:** Universidad Europea
-**Grado:** Ingeniería Matemática Aplicada al Análisis de Datos
-**Curso:** 3.º
-**Asignatura:** Big Data I
 
-### Autores
+**Autores:**
 
 - Juan Manuel Palencia Osorio
 - Pablo Mata Rius
@@ -16,188 +15,112 @@
 
 ---
 
-## Descripción general
+## 1. Idea de Negocio
 
-Este proyecto implementa un **pipeline completo de Big Data** orientado al análisis socioeconómico, ambiental y financiero en el contexto europeo.La arquitectura sigue un enfoque profesional y modular, separando claramente:
+**Green Turning Point (GTP)** es una plataforma de análisis basada en **Big Data, imágenes satelitales y modelos econométricos** cuyo objetivo es identificar **ciudades europeas que se encuentran en el punto de inflexión ambiental**.
 
-- Procesamiento Big Data (Spark / LORCA)
-- Persistencia y explotación relacional (Docker / SQL)
+El proyecto transforma la **Curva de Kuznets Ambiental** en una **herramienta práctica de inversión**, detectando aquellas ciudades donde:
 
-Ambos entornos funcionan como **entidades independientes**, permitiendo flexibilidad, escalabilidad y reproducibilidad.
+- El crecimiento económico deja de aumentar la contaminación.
+- Comienza una fase de regeneración ambiental.
+- Existe alto potencial de rentabilidad con bajo impacto ambiental.
 
----
+GTP está orientado a:
 
-## Arquitectura general
-
-```
-LORCA (Spark, Parquet)
-        |
-        | exports.py (opcional)
-        v
-       CSV
-        |
-        v
-Docker (MySQL) -> Power BI
-```
+- Fondos de inversión verde.
+- Instituciones públicas.
+- Planificadores urbanos.
+- Empresas interesadas en sostenibilidad y transición energética.
 
 ---
 
-## 1. Entorno LORCA — Big Data (Spark)
+## 2. Arquitectura General del Proyecto
 
-### Objetivo
+El repositorio se divide en **dos grandes bloques independientes pero complementarios**:
 
-Procesar grandes volúmenes de datos heterogéneos, integrarlos y generar datasets listos para análisis y modelado.
+### A) Pipeline Analítico (LORCA)
 
-### Tecnologías
+- Basado en **Spark + Parquet**.
+- Optimizado para procesamiento masivo.
+- No orientado directamente a herramientas BI.
+- Incluye un script `exports.py` que transforma los datos finales a **CSV** para Power BI, Tableau u otros sistemas.
 
-- Apache Spark (PySpark)
-- Python
-- Parquet
-- Entorno distribuido LORCA
+### B) Pipeline Productivo (Docker + SQL)
 
-### Estructura principal
+- Pensado para despliegue local reproducible.
+- Uso de **Docker Compose**.
+- Base de datos SQL local.
+- Preparado para servir datos estructurados a aplicaciones externas.
 
-```
-Proyecto-Big-Data-I/
-├── ETL/
-│   ├── run_all.py
-│   ├── exports.py
-│   ├── config.py
-│   └── scripts/
-├── data/
-│   ├── raw/
-│   ├── processed/
-│   └── model_ready/
-```
-
-### Fuentes de datos integradas
-
-- Eurostat
-- OECD
-- InvestEU
-- INE (PIB trimestral)
-- Datos financieros (YFinance)
-- Kuznets Curve
-- Datos ambientales (NDVI, NO2, HRL)
-
-### Formato de salida
-
-- Parquet
-- Optimizado para Big Data
-- No consumible directamente por Power BI
+Ambos pipelines comparten la lógica de negocio y los datos base, pero **pueden ejecutarse de forma independiente**.
 
 ---
 
-## Exportación a CSV (LORCA)
+## 3. Fuentes de Datos
 
-Debido a que Power BI y herramientas SQL no consumen Parquet de forma nativa, se incluye el script:
-
-```
-ETL/exports.py
-```
-
-Este script permite:
-
-- Convertir datasets Parquet a CSV
-- Facilitar su uso en SQL, Power BI o Docker
-
-> La exportación a CSV **solo se realiza en LORCA**.
+- **Eurostat:** PIB, pobreza, productividad, empleo, energías renovables, emisiones.
+- **OECD:** Indicadores ambientales y económicos.
+- **Copernicus Sentinel-2:** NDVI (vegetación).
+- **Copernicus Sentinel-5P:** NO₂ (contaminación).
+- **HRL:** Imperviousness (suelo sellado).
+- **Yahoo Finance:** Datos financieros de empresas energéticas europeas.
+- **INE:** Series macroeconómicas españolas.
+- **InvestEU:** Inversión pública europea.
 
 ---
 
-## 2. Entorno Docker — SQL y Visualización
+## 4. Variables Clave
 
-### Objetivo
-
-Ofrecer una implementación relacional y portable del proyecto, orientada a consultas SQL y visualización.
-
-### Tecnologías
-
-- Docker
-- Docker Compose
-- MySQL 8
-- Adminer
-- Power BI
-
-### Estructura
-
-```
-Proyecto-Big-Data-I/
-├── docker-compose.yml
-├── Dockerfile
-├── .env
-├── data/
-│   └── mysql/
-└── logs/
-```
-
-### Ejecución
-
-```
-docker-compose --profile db up -d
-```
-
-### Accesos
-
-- Adminer: http://localhost:8080
-- MySQL: localhost:3307
+- NDVI (media, mediana, percentiles, Gini).
+- Contaminación NO₂ (media, máximo, mínimo, desviación).
+- Suelo sellado (Imperviousness).
+- PIB per cápita.
+- Indicadores financieros sectoriales.
+- Pendiente NDVI (detección de Turning Point).
 
 ---
 
-## Relación entre LORCA y Docker
+## 5. Reglas de Imputación
 
-### Principio clave
+- **NO₂ faltante:** media por ciudad y año.
+- **Imperviousness faltante:** valor base de 2018 por ciudad.
+- **Datos financieros faltantes:** uso de países proxy (ej. Bélgica = media Francia + Países Bajos).
 
-LORCA y Docker son **entidades independientes**.
+---
 
-### Flujo recomendado
+## 6. Ejecución
 
+### Pipeline LORCA
+
+```bash
+python run_all.py
+python exports.py
 ```
-LORCA (Spark)
-→ Parquet
-→ exports.py
-→ CSV
-→ Docker (MySQL)
-→ Power BI
+
+### Pipeline Docker
+
+```bash
+docker-compose --profile etl --profile db up --build
 ```
 
-### Escenarios válidos
+---
 
-- Ejecutar solo LORCA
-- Ejecutar solo Docker
-- Ejecutar ambos conjuntamente
+## 7. Resultado Final
+
+- Dataset maestro a nivel ciudad-año.
+- Ranking europeo de ciudades en Turning Point.
+- Base sólida para decisiones de inversión sostenible.
 
 ---
 
-## Justificación técnica y académica
+## 8. Enfoque Académico
 
-| Entorno | Función                | Formato   |
-| ------- | ----------------------- | --------- |
-| LORCA   | Big Data, ETL, modelado | Parquet   |
-| Docker  | SQL, BI, explotación   | CSV / SQL |
+Este proyecto integra:
 
-Esta separación:
+- Estadística avanzada.
+- Econometría ambiental.
+- Ingeniería de datos.
+- Big Data distribuido.
+- Aplicación real a sostenibilidad.
 
-- Refleja arquitecturas reales de Big Data
-- Mejora escalabilidad y mantenibilidad
-- Facilita análisis avanzado y visualización
-- Permite evaluación modular del proyecto
-
----
-
-## Resumen para defensa
-
-El proyecto se estructura en dos entornos independientes.
-LORCA se encarga del procesamiento Big Data mediante Apache Spark, generando datasets optimizados en Parquet.
-Docker proporciona una implementación basada en MySQL orientada a explotación relacional y visualización.
-Ambos entornos pueden ejecutarse de forma autónoma, garantizando flexibilidad, escalabilidad y reproducibilidad.
-
----
-
-## Estado del proyecto
-
-- ETL completo
-- Integración de múltiples fuentes
-- Arquitectura Big Data + SQL
-- Exportación para BI
-- Docker reproducible
+Desarrollado íntegramente en el contexto académico de la **Universidad Europea**, demostrando una aplicación práctica de la ingeniería matemática al análisis de datos reales y complejos.
