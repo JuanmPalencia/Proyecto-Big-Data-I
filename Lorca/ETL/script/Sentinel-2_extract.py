@@ -36,7 +36,7 @@ import config
 # ==============================================================================
 # CONFIGURACIÓN
 # ==============================================================================
-GOOGLE_PROJECT = "gtpuem"
+GOOGLE_PROJECT = "gtpuem23"
 START_YEAR     = 2018
 SCALE_M        = 60          # metros por píxel para reduceRegion
 MAX_WORKERS    = 8           # hilos paralelos (GEE soporta 8-10 bien)

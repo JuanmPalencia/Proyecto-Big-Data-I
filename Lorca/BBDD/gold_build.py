@@ -102,13 +102,13 @@ def build_fact_kuznets(spark):
 
     # --- Unir económico ---
     if eco is not None:
-        eco_sel = eco.select(
-            "city_sk", "year",
-            "gdp_pps_per_capita", "gdp_eur_per_capita",
-            "ln_gdp_pps", "ln_gdp_pps_sq", "gdp_growth_rate",
-            "fua_population"
-        )
-        fk = fk.join(eco_sel, on=["city_sk", "year"], how="left")
+        eco_cols = ["city_sk", "year",
+                    "gdp_pps_per_capita", "gdp_eur_per_capita",
+                    "ln_gdp_pps", "ln_gdp_pps_sq", "gdp_growth_rate",
+                    "fua_population", "co2_country_kt"]
+        # Solo seleccionar columnas que realmente existen en Silver
+        eco_cols_existing = [c for c in eco_cols if c in eco.columns]
+        fk = fk.join(eco.select(eco_cols_existing), on=["city_sk", "year"], how="left")
     else:
         fk = (fk
               .withColumn("gdp_pps_per_capita", F.lit(None).cast(DoubleType()))
@@ -116,7 +116,8 @@ def build_fact_kuznets(spark):
               .withColumn("ln_gdp_pps",         F.lit(None).cast(DoubleType()))
               .withColumn("ln_gdp_pps_sq",      F.lit(None).cast(DoubleType()))
               .withColumn("gdp_growth_rate",    F.lit(None).cast(DoubleType()))
-              .withColumn("fua_population",     F.lit(None).cast(LongType())))
+              .withColumn("fua_population",     F.lit(None).cast(LongType()))
+              .withColumn("co2_country_kt",     F.lit(None).cast(DoubleType())))
 
     # --- Unir financiero: agregar mensual → anual por país × año ---
     # monthly_volatility = std_diaria * sqrt(21); anualizar: avg_mensual * sqrt(12)
@@ -201,6 +202,22 @@ def build_fact_kuznets(spark):
          .when(F.col("investment_score") >= 50, "HOLD")
          .otherwise("AVOID")
     )
+
+    # Porcentaje de suelo natural (árbol + matorral + pradera + agua) — derivado de WorldCover
+    # Solo se calcula cuando hay datos WorldCover (2020 y 2021); NULL en otros años
+    if "wc_tree_pct" in fk.columns:
+        fk = fk.withColumn(
+            "wc_natural_pct",
+            F.when(
+                F.col("wc_tree_pct").isNotNull(),
+                F.col("wc_tree_pct")
+                + F.coalesce(F.col("wc_shrub_pct"), F.lit(0.0))
+                + F.coalesce(F.col("wc_grass_pct"), F.lit(0.0))
+                + F.coalesce(F.col("wc_water_pct"), F.lit(0.0))
+            ).otherwise(F.lit(None).cast(DoubleType()))
+        )
+    else:
+        fk = fk.withColumn("wc_natural_pct", F.lit(None).cast(DoubleType()))
 
     fk = fk.withColumn("_gold_load_date", F.lit(GOLD_LOAD_DATE))
 

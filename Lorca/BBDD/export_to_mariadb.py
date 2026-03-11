@@ -4,7 +4,7 @@ export_to_postgres.py — GTP (Green Turning Point)
 Exporta las tablas Gold de HDFS (Hive Parquet) a PostgreSQL (capa de servicio).
 
 Propósito:
-    PostgreSQL sirve al dashboard (Flask API, Power BI, Tableau).
+    PostgreSQL sirve al dashboard (Power BI / Tableau).
     La latencia de Hive/HDFS (~segundos) es inadecuada para dashboards;
     PostgreSQL responde en <10ms con índices adecuados.
 
@@ -14,7 +14,7 @@ Arquitectura:
                 ├── Modo spark: Spark JDBC (en Lorca, lee HDFS directamente)
                 └── Modo local: pandas + sqlalchemy (local, lee CSVs exportados)
                         └── PostgreSQL schema gtp.*
-                                └── Flask API / Power BI / Tableau
+                                └── Power BI / Tableau (conexión directa)
 
 Ejecución en Lorca (modo spark):
     spark-submit --master yarn \\
@@ -42,6 +42,23 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Cargar .env si existe (Lorca/ o Lorca/BBDD/)
+try:
+    from dotenv import load_dotenv
+    for _env in [
+        Path(__file__).resolve().parent / ".env",
+        Path(__file__).resolve().parent.parent / ".env",
+    ]:
+        if _env.exists():
+            load_dotenv(_env)
+            break
+except ImportError:
+    pass  # python-dotenv no instalado, se usan las vars de entorno del shell
+
+# EURO_FUAS para exportar dim_city con coordenadas (necesario para mapas Power BI)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ETL" / "script"))
+from config import EURO_FUAS
 
 
 # ==============================================================================
@@ -80,6 +97,46 @@ def timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def build_dim_city_df():
+    """
+    Construye un DataFrame de pandas con dim_city desde EURO_FUAS.
+    Formato city_code: 'NombreCiudad_ISO2' → city_name = 'NombreCiudad', country_code = 'ISO2'
+    """
+    import pandas as pd
+    rows = []
+    for city_code, (lat, lon) in EURO_FUAS.items():
+        parts = city_code.rsplit("_", 1)
+        city_name    = parts[0] if len(parts) == 2 else city_code
+        country_code = parts[1] if len(parts) == 2 else ""
+        rows.append({
+            "city_code":    city_code,
+            "city_name":    city_name,
+            "country_code": country_code,
+            "latitude":     lat,
+            "longitude":    lon,
+        })
+    return pd.DataFrame(rows)
+
+
+def export_dim_city(engine, dry_run: bool) -> tuple:
+    """Exporta dim_city (coordenadas) a PostgreSQL. Necesario para mapas Power BI."""
+    try:
+        df = build_dim_city_df()
+        n = len(df)
+        if dry_run:
+            print(f"    [DRY RUN] Escribiría {n} filas a PostgreSQL gtp.dim_city")
+        else:
+            df.to_sql(
+                name="dim_city", schema=None, con=engine,
+                if_exists="replace", index=False, chunksize=500, method="multi",
+            )
+            print(f"    [OK] {n} filas → PostgreSQL gtp.dim_city")
+        return (True, n)
+    except Exception as e:
+        print(f"    [ERROR] dim_city: {e}")
+        return (False, 0)
+
+
 # ==============================================================================
 # MODO SPARK — Lee Parquet de HDFS, escribe vía JDBC
 # Para usar en Lorca con: spark-submit --packages org.postgresql:postgresql:42.7.3
@@ -95,11 +152,11 @@ def export_spark_mode(pg: dict, tables: list, dry_run: bool) -> dict:
         .getOrCreate()
     )
 
-    jdbc_url = f"jdbc:postgresql://{pg['host']}:{pg['port']}/{pg['database']}"
+    jdbc_url = f"jdbc:mysql://{pg['host']}:{pg['port']}/{pg['database']}?useSSL=false&allowPublicKeyRetrieval=true"
     jdbc_props = {
         "user":      pg["user"],
         "password":  pg["password"],
-        "driver":    "org.postgresql.Driver",
+        "driver":    "com.mysql.cj.jdbc.Driver",
         "batchsize": "5000",
     }
 
@@ -121,7 +178,7 @@ def export_spark_mode(pg: dict, tables: list, dry_run: bool) -> dict:
                     .write
                     .jdbc(
                         url=jdbc_url,
-                        table=f"gtp.{table}",
+                        table=table,
                         mode=PG_WRITE_MODE,
                         properties=jdbc_props,
                     )
@@ -134,6 +191,18 @@ def export_spark_mode(pg: dict, tables: list, dry_run: bool) -> dict:
         except Exception as e:
             print(f"    [ERROR] {e}")
             results[table] = (False, 0)
+
+    # dim_city siempre se exporta (coordenadas para Power BI)
+    print(f"\n  [dim_city] Exportando coordenadas desde config.EURO_FUAS ...")
+    try:
+        import pandas as pd
+        from sqlalchemy import create_engine
+        conn_str = f"postgresql+psycopg2://{pg['user']}:{pg['password']}@{pg['host']}:{pg['port']}/{pg['database']}"
+        engine = create_engine(conn_str)
+        results["dim_city"] = export_dim_city(engine, dry_run)
+    except Exception as e:
+        print(f"    [ERROR] dim_city: {e}")
+        results["dim_city"] = (False, 0)
 
     spark.stop()
     return results
@@ -148,11 +217,11 @@ def export_local_mode(pg: dict, export_dir: Path, tables: list, dry_run: bool) -
         import pandas as pd
         from sqlalchemy import create_engine, text
     except ImportError:
-        print("[ERROR] Instala dependencias: pip install pandas sqlalchemy psycopg2-binary")
+        print("[ERROR] Instala dependencias: pip install pandas sqlalchemy pymysql")
         sys.exit(1)
 
     conn_str = (
-        f"postgresql+psycopg2://{pg['user']}:{pg['password']}"
+        f"mysql+pymysql://{pg['user']}:{pg['password']}"
         f"@{pg['host']}:{pg['port']}/{pg['database']}"
     )
     try:
@@ -164,7 +233,10 @@ def export_local_mode(pg: dict, export_dir: Path, tables: list, dry_run: bool) -
         print(f"  [ERROR] No se puede conectar a PostgreSQL: {e}")
         sys.exit(1)
 
-    results = {}
+    # dim_city siempre se exporta primero (coordenadas para Power BI)
+    print(f"\n  [dim_city] Exportando coordenadas desde config.EURO_FUAS ...")
+    results = {"dim_city": export_dim_city(engine, dry_run)}
+
     for table in tables:
         # Busca el CSV en export_dir/{table}/*.csv o export_dir/{table}.csv
         candidates = (
@@ -189,7 +261,7 @@ def export_local_mode(pg: dict, export_dir: Path, tables: list, dry_run: bool) -
             else:
                 df.to_sql(
                     name=table,
-                    schema="gtp",
+                    schema=None,           # MariaDB no usa schemas, usa la DB directamente
                     con=engine,
                     if_exists="replace",   # Trunca y recarga
                     index=False,

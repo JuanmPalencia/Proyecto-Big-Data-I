@@ -1,25 +1,27 @@
 """
-Sentinel-5p_extract.py — GTP (Green Turning Point)
-Extrae estadísticas NO2 mensuales por ciudad usando Google Earth Engine.
+s5p_aerosol_extract.py — GTP (Green Turning Point)
+Extrae el Índice de Aerosol UV (UVAI) mensual por ciudad usando Google Earth Engine.
 
-Estrategia: reduceRegion en GEE (sin descargar GeoTIFFs).
-GEE calcula la media mensual de NO2 troposférico, filtra nubes y devuelve
-un único valor numérico por ciudad×mes — sin descarga de imágenes.
+Estrategia: reduceRegion en GEE (sin descargas).
+GEE calcula la media mensual del absorbing_aerosol_index de Sentinel-5P.
+El UVAI es un proxy de la concentración de aerosoles absorbentes (humo, polvo, ceniza).
+  - UVAI > 0 → aerosoles absorbentes (humo, polvo mineral)
+  - UVAI < 0 → aerosoles dispersivos (aerosol marino, nube)
+  - |UVAI| alto → mayor concentración de partículas en suspensión
 
 Datos:
-  Colección: COPERNICUS/S5P/OFFL/L3_NO2 (versión Offline, mejor calidad)
-  Banda:     tropospheric_NO2_column_number_density → renombrada a NO2
-  Unidades:  mol/m²  (rango típico ciudades europeas: 5e-5 a 2e-4)
-  Filtro:    cloud_fraction < 0.3
+  Colección: COPERNICUS/S5P/OFFL/L3_AER_AI
+  Banda:     absorbing_aerosol_index → renombrada a UVAI
+  Disponible: desde 2018
 
-Output: DatosProcesados/s5p.csv
-Columnas: City, Year, Month, NO2_Mean, NO2_Std, pixel_count
+Output: DatosProcesados/s5p_aerosol.csv
+Columnas: City, Year, Month, UVAI_Mean, UVAI_Std, pixel_count
 
 Idempotente: reanuda desde donde se quedó si se interrumpe.
 
 Ejecución:
-  python Sentinel-5p_extract.py
-  python Sentinel-5p_extract.py --start-year 2020 --workers 6
+  python s5p_aerosol_extract.py
+  python s5p_aerosol_extract.py --start-year 2019 --workers 6
 """
 
 import csv
@@ -39,14 +41,14 @@ import config
 # CONFIGURACIÓN
 # ==============================================================================
 GOOGLE_PROJECT = "gtpuem23"
-START_YEAR     = 2018         # S5P OFFL fiable desde 2018
-SCALE_M        = 1113         # ~1km, resolución nativa de S5P redondeada
+START_YEAR     = 2018           # S5P AER_AI disponible desde finales de 2018
+SCALE_M        = 1113           # ~1km, resolución nativa S5P (~5.5km) → agrupado a 1km
 MAX_WORKERS    = 8
 MAX_RETRIES    = 4
-BUFFER_M       = 20_000       # radio buffer alrededor del centroide (20 km)
+BUFFER_M       = 20_000         # 20 km buffer alrededor del centroide
 
-OUTPUT_CSV  = config.INPUT_DIR_PROCESSED / "s5p.csv"
-CSV_COLUMNS = ["City", "Year", "Month", "NO2_Mean", "NO2_Std", "pixel_count"]
+OUTPUT_CSV  = config.INPUT_DIR_PROCESSED / "s5p_aerosol.csv"
+CSV_COLUMNS = ["City", "Year", "Month", "UVAI_Mean", "UVAI_Std", "pixel_count"]
 
 _csv_lock = threading.Lock()
 
@@ -96,38 +98,15 @@ def append_row(csv_path: Path, row: tuple):
 
 
 # ==============================================================================
-# GEE — COLECCIÓN NO2 CON FILTRO DE NUBES
-# ==============================================================================
-def get_no2_collection(roi, start_date: str, end_date: str):
-    """
-    Colección Sentinel-5P OFFL NO2 con filtro de nubosidad y banda renombrada.
-    Filtramos cloud_fraction < 0.3 para evitar falsos positivos.
-    La banda se renombra a 'NO2' para simplificar los keys de reduceRegion.
-    """
-    def filter_clouds(image):
-        cloud_frac = image.select('cloud_fraction')
-        return image.updateMask(cloud_frac.lt(0.3))
-
-    return (
-        ee.ImageCollection('COPERNICUS/S5P/OFFL/L3_NO2')
-        .filterBounds(roi)
-        .filterDate(start_date, end_date)
-        .map(filter_clouds)
-        .select('tropospheric_NO2_column_number_density')
-        .map(lambda img: img.rename('NO2'))
-    )
-
-
-# ==============================================================================
 # WORKER — procesa una ciudad×mes
 # ==============================================================================
 def process_city_month(task: tuple):
     """
-    Calcula NO2_Mean, NO2_Std y pixel_count para una ciudad y un mes.
+    Calcula UVAI_Mean, UVAI_Std y pixel_count para una ciudad y un mes.
     Usa GEE reduceRegion: sin descargar ningún archivo.
 
     Retorna:
-      - tuple (City, Year, Month, NO2_Mean, NO2_Std, pixel_count) si OK
+      - tuple (City, Year, Month, UVAI_Mean, UVAI_Std, pixel_count) si OK
       - str con prefijo [WARN] si no hay datos válidos ese mes
       - str con prefijo [ERROR] si hay fallo de GEE o de red
     """
@@ -140,14 +119,20 @@ def process_city_month(task: tuple):
 
     for attempt in range(MAX_RETRIES):
         try:
-            col = get_no2_collection(roi, start, end)
+            col = (
+                ee.ImageCollection("COPERNICUS/S5P/OFFL/L3_AER_AI")
+                .filterBounds(roi)
+                .filterDate(start, end)
+                .select("absorbing_aerosol_index")
+                .map(lambda img: img.rename("UVAI"))
+            )
+
             img = col.mean().clip(roi)
 
-            # reduceRegion: media + desviación estándar + recuento de píxeles
             reducer = (
                 ee.Reducer.mean()
-                .combine(ee.Reducer.stdDev(),  sharedInputs=True)
-                .combine(ee.Reducer.count(),   sharedInputs=True)
+                .combine(ee.Reducer.stdDev(), sharedInputs=True)
+                .combine(ee.Reducer.count(),  sharedInputs=True)
             )
 
             stats = img.reduceRegion(
@@ -155,20 +140,20 @@ def process_city_month(task: tuple):
                 geometry=roi,
                 scale=SCALE_M,
                 maxPixels=1e8,
-                bestEffort=True
+                bestEffort=True,
             ).getInfo()
 
-            no2_mean = stats.get('NO2_mean')
-            no2_std  = stats.get('NO2_stdDev', 0.0)
-            n_pixels = stats.get('NO2_count',  0)
+            uvai_mean = stats.get("UVAI_mean")
+            uvai_std  = stats.get("UVAI_stdDev", 0.0)
+            n_pixels  = stats.get("UVAI_count",  0)
 
-            if no2_mean is None:
+            if uvai_mean is None:
                 return f"[WARN] {city} {year}-{month:02d}: sin píxeles válidos"
 
             return (
                 city, year, month,
-                round(no2_mean, 10),       # mol/m² — necesita precisión alta
-                round(no2_std or 0.0, 10),
+                round(uvai_mean, 6),
+                round(uvai_std or 0.0, 6),
                 int(n_pixels or 0),
             )
 
@@ -189,16 +174,17 @@ def process_city_month(task: tuple):
 # ==============================================================================
 def main():
     parser = argparse.ArgumentParser(
-        description="GTP Sentinel-5P NO2 — extracción vía GEE reduceRegion"
+        description="GTP S5P Aerosol UVAI — extracción vía GEE reduceRegion"
     )
     parser.add_argument("--start-year", type=int, default=START_YEAR,
                         help=f"Año de inicio (default: {START_YEAR})")
-    parser.add_argument("--workers", type=int, default=MAX_WORKERS,
+    parser.add_argument("--workers",    type=int, default=MAX_WORKERS,
                         help=f"Hilos paralelos (default: {MAX_WORKERS})")
     args = parser.parse_args()
 
     print("=" * 60)
-    print("  GTP — EXTRACCIÓN NO2 (Sentinel-5P via GEE)")
+    print("  GTP — EXTRACCIÓN UVAI (Sentinel-5P Aerosol via GEE)")
+    print(f"  Colección:  COPERNICUS/S5P/OFFL/L3_AER_AI")
     print(f"  Escala:     {SCALE_M}m | Buffer: {BUFFER_M//1000}km")
     print(f"  Hilos:      {args.workers} | Inicio: {args.start_year}")
     print(f"  Output:     {OUTPUT_CSV}")
@@ -244,9 +230,9 @@ def main():
 
     print()
     print("=" * 60)
-    print(f"  FIN — NO2 extraído")
+    print(f"  FIN — Aerosol UVAI extraído")
     print(f"  Filas escritas:    {ok:,}")
-    print(f"  Sin datos (nubes): {warn:,}")
+    print(f"  Sin datos:         {warn:,}")
     print(f"  Errores GEE:       {err:,}")
     print(f"  Output: {OUTPUT_CSV}")
     print("=" * 60)

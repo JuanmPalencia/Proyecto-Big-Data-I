@@ -7,7 +7,7 @@ Fases:
   2. Ambientales globales: Sentinel-2 (NDVI), Sentinel-5P (NO2), HRL + hrl_to_csv
   3. Post-proceso        : merge.py (dataset maestro CSV)
   4. BBDD + ML + Export  : bronze → silver → gold → clustering → ekc →
-                           xgboost → prophet → export_to_postgres
+                           xgboost → prophet → export_to_mariadb
                            (via spark-submit run_pipeline.py en YARN)
 
 Ejecución completa:
@@ -72,13 +72,21 @@ SCRIPTS_ECONOMICOS = [
 # Cada script itera todas las ciudades internamente — sin bucle por ciudad.
 SCRIPTS_AMBIENTALES = [
     # NDVI mensual via GEE reduceRegion → sentinel2.csv
-    {"file": "Sentinel-2_extract.py",  "args": []},
+    {"file": "Sentinel-2_extract.py",    "args": []},
     # NO2 mensual via GEE reduceRegion → s5p.csv
-    {"file": "Sentinel-5p_extract.py", "args": []},
+    {"file": "Sentinel-5p_extract.py",   "args": []},
     # Impermeabilización via EEA REST → descarga GeoTIFFs
-    {"file": "HRL_extract.py",         "args": []},
+    {"file": "HRL_extract.py",           "args": []},
     # Convierte los GeoTIFFs de HRL a hrl.csv (requiere rasterio)
-    {"file": "hrl_to_csv.py",          "args": []},
+    {"file": "hrl_to_csv.py",            "args": []},
+    # Temperatura + precipitación mensual via GEE ERA5-Land → era5.csv
+    {"file": "era5_extract.py",          "args": []},
+    # Índice de aerosol UV (UVAI) mensual via GEE S5P → s5p_aerosol.csv
+    {"file": "s5p_aerosol_extract.py",   "args": []},
+    # Uso de suelo ESA WorldCover 2020+2021 via GEE → urban_atlas.csv
+    {"file": "urban_atlas_extract.py",   "args": []},
+    # Emisiones CO2 nacionales EDGAR v8 (descarga automática JRC) → edgar_co2.csv
+    {"file": "edgar_co2_extract.py",     "args": []},
 ]
 
 # FASE 3: Post-proceso (merge → dataset maestro CSV)

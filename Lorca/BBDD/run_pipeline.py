@@ -49,7 +49,7 @@ SCRIPTS = {
     "ekc":          BBDD_DIR / "models" / "ekc_regression.py",
     "xgboost":      BBDD_DIR / "models" / "xgboost_classifier.py",
     "prophet":      BBDD_DIR / "models" / "prophet_forecast.py",
-    "export":       BBDD_DIR / "export_to_postgres.py",
+    "export":       BBDD_DIR / "export_to_mariadb.py",
 }
 
 # Argumentos por defecto para cada script
@@ -101,9 +101,9 @@ def run_spark_submit(script_path: Path, extra_args: list, phase: str = "") -> bo
         "--executor-cores", "2",
         "--num-executors", "4",
     ]
-    # La exportación a PostgreSQL requiere el driver JDBC
+    # La exportación a MariaDB/MySQL requiere el driver JDBC
     if phase == "export":
-        cmd += ["--packages", "org.postgresql:postgresql:42.7.3"]
+        cmd += ["--packages", "com.mysql:mysql-connector-j:8.3.0"]
     cmd += [str(script_path)] + extra_args
 
     print(f"  CMD: {' '.join(cmd)}")

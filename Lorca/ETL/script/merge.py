@@ -42,27 +42,25 @@ def calculate_ndvi_trend(df):
 
 def load_environmental_data():
     """
-    Carga y fusiona las tres fuentes de 'verdad física':
+    Carga y fusiona todas las fuentes ambientales:
     1. Sentinel-2 (Vegetación/NDVI)
     2. Sentinel-5P (Contaminación/NO2)
-    3. HRL (Capas de alta resolución de suelo impermeabilizado)
+    3. HRL (Impermeabilización del suelo)
+    4. ERA5-Land (Temperatura + Precipitación)
+    5. S5P Aerosol (UVAI — proxy PM2.5/humo)
+    6. Urban Atlas — ESA WorldCover (Uso de suelo)
     """
-    
-    # --- 1. Sentinel-2 (NDVI) ---
-    # Este es nuestro dataset base. Si no tenemos vegetación, no tenemos análisis.
+
+    # --- 1. Sentinel-2 (NDVI) — dataset base ---
     s2_path = config.INPUT_DIR_PROCESSED / "sentinel2.csv"
     if s2_path.exists():
         df_s2 = pd.read_csv(s2_path)
-        # Agregamos por año para simplificar la serie temporal.
-        # Nos interesa la tendencia macro, no la variación mensual.
         df_env = df_s2.groupby(["City", "Year"])["NDVI_Mean"].mean().reset_index()
     else:
-        print(f"[WARN] Ojo: No encontré {s2_path.name}. Iniciando con DataFrame vacío.")
+        print(f"[WARN] No encontré {s2_path.name}. Iniciando con DataFrame vacío.")
         df_env = pd.DataFrame(columns=["City", "Year", "NDVI_Mean"])
 
     # --- 2. Sentinel-5P (NO2) ---
-    # Cruzamos los datos de calidad del aire. Es un 'Left Join' porque queremos
-    # mantener todas las ciudades con datos de vegetación, tengan o no datos de NO2.
     s5p_path = config.INPUT_DIR_PROCESSED / "s5p.csv"
     if s5p_path.exists():
         df_s5p = pd.read_csv(s5p_path)
@@ -70,13 +68,58 @@ def load_environmental_data():
         df_env = pd.merge(df_env, s5p_yearly, on=["City", "Year"], how="left")
 
     # --- 3. HRL (Impermeabilización) ---
-    # Datos estructurales sobre cuánto cemento hay. También 'Left Join'.
     hrl_path = config.INPUT_DIR_PROCESSED / "hrl.csv"
     if hrl_path.exists():
         df_hrl = pd.read_csv(hrl_path)
         df_env = pd.merge(df_env, df_hrl, on=["City", "Year"], how="left")
 
+    # --- 4. ERA5-Land (Temperatura + Precipitación) ---
+    era5_path = config.INPUT_DIR_PROCESSED / "era5.csv"
+    if era5_path.exists():
+        df_era5 = pd.read_csv(era5_path)
+        era5_yearly = (
+            df_era5
+            .groupby(["City", "Year"])
+            .agg(Temp_Mean_C=("Temp_Mean_C", "mean"),
+                 Precip_Total_m=("Precip_Total_m", "sum"))
+            .reset_index()
+        )
+        df_env = pd.merge(df_env, era5_yearly, on=["City", "Year"], how="left")
+
+    # --- 5. S5P Aerosol (UVAI) ---
+    aerosol_path = config.INPUT_DIR_PROCESSED / "s5p_aerosol.csv"
+    if aerosol_path.exists():
+        df_aer = pd.read_csv(aerosol_path)
+        aer_yearly = df_aer.groupby(["City", "Year"])["UVAI_Mean"].mean().reset_index()
+        df_env = pd.merge(df_env, aer_yearly, on=["City", "Year"], how="left")
+
+    # --- 6. Urban Atlas — ESA WorldCover (Uso de suelo) ---
+    ua_path = config.INPUT_DIR_PROCESSED / "urban_atlas.csv"
+    if ua_path.exists():
+        df_ua = pd.read_csv(ua_path)
+        df_env = pd.merge(df_env, df_ua, on=["City", "Year"], how="left")
+
     return df_env
+
+
+def load_co2_data():
+    """
+    Carga las emisiones CO2 nacionales de EDGAR.
+    Granularidad: city_code × año (valor de país aplicado a todas las ciudades).
+    """
+    co2_path = config.INPUT_DIR_PROCESSED / "edgar_co2.csv"
+    if not co2_path.exists():
+        return pd.DataFrame()
+
+    df_co2 = pd.read_csv(co2_path)
+    # Eliminar duplicados: EDGAR puede tener múltiples sectores por país
+    # ya deberían estar sumados por edgar_co2_extract.py, pero por seguridad:
+    df_co2 = (
+        df_co2
+        .groupby(["City", "Year"], as_index=False)["CO2_kt"]
+        .sum()
+    )
+    return df_co2
 
 def load_financial_data():
     """
@@ -132,7 +175,11 @@ def main():
     print(" -> Procesando histórico financiero...")
     df_finance = load_financial_data()
 
-    # 3. Fusión de Mundos (Merge)
+    # 3. Cargar emisiones CO2 (EDGAR)
+    print(" -> Cargando emisiones CO2 (EDGAR)...")
+    df_co2 = load_co2_data()
+
+    # 4. Fusión de Mundos (Merge)
     # Primero necesitamos saber a qué país pertenece cada ciudad.
     # Truco: El formato es 'NombreCiudad_XX', así que extraemos 'XX'.
     df_env["Country_Code"] = df_env["City"].apply(lambda x: x.split("_")[-1] if isinstance(x, str) and "_" in x else None)
@@ -143,11 +190,17 @@ def main():
         df_finance,
         left_on=["Country_Code", "Year"],
         right_on=["FUA_Country_Code", "Year"],
-        how="left" # Priorizamos tener datos de ciudad, aunque falten finanzas algún año
+        how="left"  # Priorizamos tener datos de ciudad, aunque falten finanzas algún año
     )
 
     # Limpieza final: borramos columnas redundantes
-    df_master.drop(columns=["FUA_Country_Code"], inplace=True)
+    df_master.drop(columns=["FUA_Country_Code"], inplace=True, errors="ignore")
+
+    # Unir CO2 (por ciudad, ya expandido a nivel ciudad en edgar_co2_extract.py)
+    if not df_co2.empty:
+        print(" -> Añadiendo emisiones CO2 nacionales (EDGAR)...")
+        df_master = pd.merge(df_master, df_co2[["City", "Year", "CO2_kt"]],
+                             on=["City", "Year"], how="left")
 
     # 4. Guardado
     # Nos aseguramos de que la carpeta exista antes de guardar

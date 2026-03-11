@@ -57,6 +57,18 @@ SOURCE_CATALOG = [
     (6,  "Eurostat_POP",    "Eurostat Population FUAs",  "API_REST",        "Eurostat / EU",
      "https://ec.europa.eu/eurostat/api/dissemination",
      "2000–present", "EU27+EEA",      "Annual",    "CC BY 4.0"),
+    (7,  "GEE_ERA5",        "ERA5-Land Temp/Precip",     "GEE_COLLECTION",  "ECMWF / Google",
+     "https://developers.google.com/earth-engine/datasets/catalog/ECMWF_ERA5_LAND_MONTHLY_AGGR",
+     "1950–present", "European FUAs", "Monthly",   "CC BY 4.0"),
+    (8,  "EDGAR_CO2",       "EDGAR CO2 Emisiones País",  "HTTP_DOWNLOAD",   "JRC / EU Commission",
+     "https://edgar.jrc.ec.europa.eu",
+     "1970–present", "EU27+World",    "Annual",    "CC BY 4.0"),
+    (9,  "GEE_S5P_AER",     "Sentinel-5P Aerosol UVAI",  "GEE_COLLECTION",  "ESA / Google",
+     "https://developers.google.com/earth-engine/datasets/catalog/COPERNICUS_S5P_OFFL_L3_AER_AI",
+     "2018–present", "European FUAs", "Monthly",   "CC BY 4.0"),
+    (10, "GEE_WORLDCOVER",  "ESA WorldCover Uso Suelo",  "GEE_COLLECTION",  "ESA / Google",
+     "https://developers.google.com/earth-engine/datasets/catalog/ESA_WorldCover_v200",
+     "2020–2021",    "European FUAs", "Biennial",  "CC BY 4.0"),
 ]
 
 # ==============================================================================
@@ -461,6 +473,52 @@ def build_fact_environmental(spark, dim_city):
             .withColumn("small_woody_mean",    F.lit(None).cast(DoubleType()))
         )
 
+    # --- ERA5-Land: temperatura + precipitación mensual → anual ---
+    era5 = read_bronze(spark, f"{HDFS_BRONZE}/era5_raw")
+    if era5 is not None:
+        era5_annual = (
+            era5
+            .groupBy("city", "year")
+            .agg(
+                F.avg("temp_mean_c").alias("temp_annual_mean_c"),
+                F.sum("precip_total_m").alias("precip_annual_sum_m"),
+            )
+        )
+        s2_annual = s2_annual.join(era5_annual, on=["city", "year"], how="left")
+    else:
+        s2_annual = (
+            s2_annual
+            .withColumn("temp_annual_mean_c",  F.lit(None).cast(DoubleType()))
+            .withColumn("precip_annual_sum_m", F.lit(None).cast(DoubleType()))
+        )
+
+    # --- S5P Aerosol: UVAI mensual → anual ---
+    aer = read_bronze(spark, f"{HDFS_BRONZE}/s5p_aerosol_raw")
+    if aer is not None:
+        aer_annual = (
+            aer
+            .groupBy("city", "year")
+            .agg(F.avg("uvai_mean").alias("uvai_annual_mean"))
+        )
+        s2_annual = s2_annual.join(aer_annual, on=["city", "year"], how="left")
+    else:
+        s2_annual = s2_annual.withColumn("uvai_annual_mean", F.lit(None).cast(DoubleType()))
+
+    # --- Urban Atlas (ESA WorldCover): uso de suelo — datos anuales estáticos ---
+    # Solo disponibles para 2020 y 2021. Para otros años el join devuelve NULL.
+    ua = read_bronze(spark, f"{HDFS_BRONZE}/urban_atlas_raw")
+    if ua is not None:
+        s2_annual = s2_annual.join(
+            ua.select("city", "year",
+                      "wc_tree_pct", "wc_shrub_pct", "wc_grass_pct",
+                      "wc_crop_pct", "wc_built_pct", "wc_bare_pct", "wc_water_pct"),
+            on=["city", "year"], how="left"
+        )
+    else:
+        for col in ["wc_tree_pct", "wc_shrub_pct", "wc_grass_pct",
+                    "wc_crop_pct", "wc_built_pct", "wc_bare_pct", "wc_water_pct"]:
+            s2_annual = s2_annual.withColumn(col, F.lit(None).cast(DoubleType()))
+
     # --- Indicadores derivados ---
     # NDVI YoY change
     w_city = Window.partitionBy("city").orderBy("year")
@@ -531,9 +589,12 @@ def build_fact_environmental(spark, dim_city):
     # FKs de source (valores fijos del catálogo dim_source)
     s2_annual = (
         s2_annual
-        .withColumn("source_sk_s2",  F.lit(1))
-        .withColumn("source_sk_s5p", F.lit(2))
-        .withColumn("source_sk_hrl", F.lit(3))
+        .withColumn("source_sk_s2",      F.lit(1))
+        .withColumn("source_sk_s5p",     F.lit(2))
+        .withColumn("source_sk_hrl",     F.lit(3))
+        .withColumn("source_sk_era5",    F.lit(7))
+        .withColumn("source_sk_aerosol", F.lit(9))
+        .withColumn("source_sk_wcover",  F.lit(10))
         .withColumn("_silver_load_date", F.lit(SILVER_LOAD_DATE))
     )
 
@@ -545,10 +606,15 @@ def build_fact_environmental(spark, dim_city):
     final_cols = [
         "env_fact_sk", "city_sk", "date_sk",
         "source_sk_s2", "source_sk_s5p", "source_sk_hrl",
+        "source_sk_era5", "source_sk_aerosol", "source_sk_wcover",
         "ndvi_annual_mean", "ndvi_annual_std",
         "ndvi_spring_mean", "ndvi_summer_mean", "ndvi_autumn_mean", "ndvi_winter_mean",
         "ndvi_valid_months", "no2_annual_mean", "no2_annual_std", "no2_valid_months",
         "imperviousness_mean", "tree_cover_pct", "small_woody_mean",
+        "temp_annual_mean_c", "precip_annual_sum_m",
+        "uvai_annual_mean",
+        "wc_tree_pct", "wc_shrub_pct", "wc_grass_pct",
+        "wc_crop_pct", "wc_built_pct", "wc_bare_pct", "wc_water_pct",
         "ndvi_yoy_change", "ndvi_trend_slope", "green_index",
         "_silver_load_date", "year", "country"
     ]
@@ -594,12 +660,32 @@ def build_fact_economic(spark, dim_city):
         on="city", how="left"
     )
 
+    # --- EDGAR CO2: emisiones nacionales por país × año ---
+    edgar = read_bronze(spark, f"{HDFS_BRONZE}/edgar_co2_raw")
+    if edgar is not None:
+        # edgar_co2_raw tiene una fila por (city, year) — extraer ISO2 y deduplicar
+        edgar_country = (
+            edgar
+            .withColumn("iso2", F.element_at(F.split(F.col("city"), "_"), -1))
+            .groupBy("iso2", "year")
+            .agg(F.first("co2_kt").alias("co2_country_kt"))
+        )
+        gdp = gdp.withColumn("_iso2", F.element_at(F.split(F.col("city"), "_"), -1))
+        gdp = gdp.join(
+            edgar_country,
+            on=[gdp["_iso2"] == edgar_country["iso2"], gdp["year"] == edgar_country["year"]],
+            how="left"
+        ).drop("_iso2", "iso2")
+    else:
+        gdp = gdp.withColumn("co2_country_kt", F.lit(None).cast(DoubleType()))
+
     gdp = (
         gdp
         .withColumn("econ_fact_sk",   F.monotonically_increasing_id() + 1)
         .withColumn("date_sk",        (F.col("year") * 10000 + 101).cast(IntegerType()))
         .withColumn("source_sk_gdp",  F.lit(5))
         .withColumn("source_sk_pop",  F.lit(6))
+        .withColumn("source_sk_co2",  F.lit(8))
         # Población: no disponible en este CSV — se añade cuando exista el extractor
         .withColumn("fua_population",       F.lit(None).cast(LongType()))
         .withColumn("population_density",   F.lit(None).cast(DoubleType()))
@@ -612,10 +698,11 @@ def build_fact_economic(spark, dim_city):
     )
 
     final_cols = [
-        "econ_fact_sk", "city_sk", "date_sk", "source_sk_gdp", "source_sk_pop",
+        "econ_fact_sk", "city_sk", "date_sk", "source_sk_gdp", "source_sk_pop", "source_sk_co2",
         "gdp_pps_per_capita", "gdp_eur_per_capita", "gdp_pps_index",
         "ln_gdp_pps", "ln_gdp_pps_sq", "gdp_growth_rate",
         "fua_population", "population_density", "population_yoy_growth",
+        "co2_country_kt",
         "_silver_load_date", "year", "country"
     ]
     existing_cols = [c for c in final_cols if c in gdp.columns]

@@ -3,14 +3,18 @@ bronze_ingest.py — GTP (Green Turning Point)
 Capa Bronze: ingesta de todos los CSVs del ETL hacia HDFS en formato Parquet.
 
 Fuentes ingestadas:
-  1. sentinel2.csv      → bronze_sentinel2_raw
-  2. s5p.csv            → bronze_sentinel5p_raw
-  3. hrl.csv            → bronze_hrl_raw
+  1. sentinel2.csv        → bronze_sentinel2_raw
+  2. s5p.csv              → bronze_sentinel5p_raw
+  3. hrl.csv              → bronze_hrl_raw
   4. finance_2006_2025.csv → bronze_finance_raw
-  5. eurostat_PIB.csv   → bronze_eurostat_gdp_raw
+  5. eurostat_PIB.csv     → bronze_eurostat_gdp_raw
+  6. era5.csv             → bronze_era5_raw
+  7. s5p_aerosol.csv      → bronze_s5p_aerosol_raw
+  8. urban_atlas.csv      → bronze_urban_atlas_raw
+  9. edgar_co2.csv        → bronze_edgar_co2_raw
 
 Ejecución en Lorca:
-  spark-submit --master yarn bronze_ingest.py [--mode overwrite|append] [--source all|s2|s5p|hrl|finance|eurostat]
+  spark-submit --master yarn bronze_ingest.py [--mode overwrite|append] [--source all|s2|s5p|hrl|finance|eurostat|era5|s5p_aerosol|urban_atlas|edgar_co2]
 """
 
 import sys
@@ -382,14 +386,199 @@ def ingest_eurostat_gdp(spark, mode: str):
 
 
 # ==============================================================================
+# INGESTA 6 — ERA5-Land (Temperatura + Precipitación)
+# CSV fuente: DatosProcesados/era5.csv
+# Columnas: City, Year, Month, Temp_Mean_C, Precip_Total_m
+# ==============================================================================
+def ingest_era5(spark, mode: str):
+    print("\n[6/9] Ingesta ERA5-Land (Temperatura + Precipitación) ...")
+    path = str(PROCESSED_DIR / "era5.csv")
+
+    schema = StructType([
+        StructField("City",           StringType(),  True),
+        StructField("Year",           IntegerType(), True),
+        StructField("Month",          IntegerType(), True),
+        StructField("Temp_Mean_C",    DoubleType(),  True),
+        StructField("Precip_Total_m", DoubleType(),  True),
+    ])
+
+    df = (
+        spark.read
+        .option("header", "true")
+        .option("mode", "DROPMALFORMED")
+        .schema(schema)
+        .csv(path)
+    )
+
+    df = (
+        df
+        .withColumnRenamed("City",           "city")
+        .withColumnRenamed("Year",           "year")
+        .withColumnRenamed("Month",          "month")
+        .withColumnRenamed("Temp_Mean_C",    "temp_mean_c")
+        .withColumnRenamed("Precip_Total_m", "precip_total_m")
+    )
+
+    df = df.withColumn("country", extract_country(F.col("city")))
+    df = df.filter(F.col("city").isNotNull() & F.col("year").isNotNull())
+    df = add_metadata(df, "GEE_ERA5", "era5.csv")
+    log_stats(df, "ERA5")
+
+    write_bronze(df, f"{HDFS_BASE}/era5_raw", ["year", "country"], mode)
+    repair_table(spark, "gtp_bronze", "bronze_era5_raw")
+
+
+# ==============================================================================
+# INGESTA 7 — S5P Aerosol (UVAI)
+# CSV fuente: DatosProcesados/s5p_aerosol.csv
+# Columnas: City, Year, Month, UVAI_Mean, UVAI_Std, pixel_count
+# ==============================================================================
+def ingest_s5p_aerosol(spark, mode: str):
+    print("\n[7/9] Ingesta S5P Aerosol (UVAI) ...")
+    path = str(PROCESSED_DIR / "s5p_aerosol.csv")
+
+    schema = StructType([
+        StructField("City",        StringType(),  True),
+        StructField("Year",        IntegerType(), True),
+        StructField("Month",       IntegerType(), True),
+        StructField("UVAI_Mean",   DoubleType(),  True),
+        StructField("UVAI_Std",    DoubleType(),  True),
+        StructField("pixel_count", IntegerType(), True),
+    ])
+
+    df = (
+        spark.read
+        .option("header", "true")
+        .option("mode", "DROPMALFORMED")
+        .schema(schema)
+        .csv(path)
+    )
+
+    df = (
+        df
+        .withColumnRenamed("City",        "city")
+        .withColumnRenamed("Year",        "year")
+        .withColumnRenamed("Month",       "month")
+        .withColumnRenamed("UVAI_Mean",   "uvai_mean")
+        .withColumnRenamed("UVAI_Std",    "uvai_std")
+        .withColumnRenamed("pixel_count", "uvai_valid_pixels")
+    )
+
+    df = df.withColumn("country", extract_country(F.col("city")))
+    df = df.filter(F.col("city").isNotNull() & F.col("year").isNotNull())
+    df = add_metadata(df, "GEE_S5P_AER", "s5p_aerosol.csv")
+    log_stats(df, "S5P_Aerosol")
+
+    write_bronze(df, f"{HDFS_BASE}/s5p_aerosol_raw", ["year", "country"], mode)
+    repair_table(spark, "gtp_bronze", "bronze_s5p_aerosol_raw")
+
+
+# ==============================================================================
+# INGESTA 8 — Urban Atlas / ESA WorldCover (Uso de suelo)
+# CSV fuente: DatosProcesados/urban_atlas.csv
+# Columnas: City, Year, Tree_Pct, Shrub_Pct, Grass_Pct, Crop_Pct,
+#           Built_Pct, Bare_Pct, Water_Pct
+# ==============================================================================
+def ingest_urban_atlas(spark, mode: str):
+    print("\n[8/9] Ingesta Urban Atlas (ESA WorldCover — uso de suelo) ...")
+    path = str(PROCESSED_DIR / "urban_atlas.csv")
+
+    schema = StructType([
+        StructField("City",      StringType(),  True),
+        StructField("Year",      IntegerType(), True),
+        StructField("Tree_Pct",  DoubleType(),  True),
+        StructField("Shrub_Pct", DoubleType(),  True),
+        StructField("Grass_Pct", DoubleType(),  True),
+        StructField("Crop_Pct",  DoubleType(),  True),
+        StructField("Built_Pct", DoubleType(),  True),
+        StructField("Bare_Pct",  DoubleType(),  True),
+        StructField("Water_Pct", DoubleType(),  True),
+    ])
+
+    df = (
+        spark.read
+        .option("header", "true")
+        .option("mode", "DROPMALFORMED")
+        .schema(schema)
+        .csv(path)
+    )
+
+    # Renombrar con prefijo wc_ para distinguir de HRL tree_cover_pct
+    df = (
+        df
+        .withColumnRenamed("City",      "city")
+        .withColumnRenamed("Year",      "year")
+        .withColumnRenamed("Tree_Pct",  "wc_tree_pct")
+        .withColumnRenamed("Shrub_Pct", "wc_shrub_pct")
+        .withColumnRenamed("Grass_Pct", "wc_grass_pct")
+        .withColumnRenamed("Crop_Pct",  "wc_crop_pct")
+        .withColumnRenamed("Built_Pct", "wc_built_pct")
+        .withColumnRenamed("Bare_Pct",  "wc_bare_pct")
+        .withColumnRenamed("Water_Pct", "wc_water_pct")
+    )
+
+    df = df.withColumn("country", extract_country(F.col("city")))
+    df = df.filter(F.col("city").isNotNull() & F.col("year").isNotNull())
+    df = add_metadata(df, "GEE_WorldCover", "urban_atlas.csv")
+    log_stats(df, "UrbanAtlas")
+
+    write_bronze(df, f"{HDFS_BASE}/urban_atlas_raw", ["year", "country"], mode)
+    repair_table(spark, "gtp_bronze", "bronze_urban_atlas_raw")
+
+
+# ==============================================================================
+# INGESTA 9 — EDGAR CO2 (Emisiones nacionales CO2 fósil)
+# CSV fuente: DatosProcesados/edgar_co2.csv
+# Columnas: City, Year, CO2_kt, Country_Code
+# ==============================================================================
+def ingest_edgar_co2(spark, mode: str):
+    print("\n[9/9] Ingesta EDGAR CO2 (emisiones nacionales) ...")
+    path = str(PROCESSED_DIR / "edgar_co2.csv")
+
+    schema = StructType([
+        StructField("City",         StringType(),  True),
+        StructField("Year",         IntegerType(), True),
+        StructField("CO2_kt",       DoubleType(),  True),
+        StructField("Country_Code", StringType(),  True),
+    ])
+
+    df = (
+        spark.read
+        .option("header", "true")
+        .option("mode", "DROPMALFORMED")
+        .schema(schema)
+        .csv(path)
+    )
+
+    df = (
+        df
+        .withColumnRenamed("City",         "city")
+        .withColumnRenamed("Year",         "year")
+        .withColumnRenamed("CO2_kt",       "co2_kt")
+        .withColumnRenamed("Country_Code", "country_code")
+    )
+
+    df = df.filter(F.col("city").isNotNull() & F.col("year").isNotNull())
+    df = add_metadata(df, "EDGAR_CO2", "edgar_co2.csv")
+    log_stats(df, "EDGAR_CO2")
+
+    write_bronze(df, f"{HDFS_BASE}/edgar_co2_raw", ["year", "country_code"], mode)
+    repair_table(spark, "gtp_bronze", "bronze_edgar_co2_raw")
+
+
+# ==============================================================================
 # ORQUESTADOR
 # ==============================================================================
 INGESTORS = {
-    "s2":       ingest_sentinel2,
-    "s5p":      ingest_sentinel5p,
-    "hrl":      ingest_hrl,
-    "finance":  ingest_finance,
-    "eurostat": ingest_eurostat_gdp,
+    "s2":           ingest_sentinel2,
+    "s5p":          ingest_sentinel5p,
+    "hrl":          ingest_hrl,
+    "finance":      ingest_finance,
+    "eurostat":     ingest_eurostat_gdp,
+    "era5":         ingest_era5,
+    "s5p_aerosol":  ingest_s5p_aerosol,
+    "urban_atlas":  ingest_urban_atlas,
+    "edgar_co2":    ingest_edgar_co2,
 }
 
 

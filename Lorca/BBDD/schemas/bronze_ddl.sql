@@ -221,9 +221,136 @@ TBLPROPERTIES (
 );
 
 -- =============================================================================
+-- TABLA 7: ERA5-Land — Temperatura y Precipitación
+-- Fuente: Google Earth Engine, colección ECMWF/ERA5_LAND/MONTHLY_AGGR
+-- Granularidad: ciudad × mes
+-- Ingesta: era5_extract.py vía GEE reduceRegion
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS bronze_era5_raw (
+    city                STRING    COMMENT 'Código ciudad FUA (ej: Madrid_ES)',
+    month               INT       COMMENT 'Mes (1–12)',
+    temp_mean_c         DOUBLE    COMMENT 'Temperatura media mensual del aire a 2m (°C)',
+    precip_total_m      DOUBLE    COMMENT 'Precipitación total mensual (m)',
+    -- Metadata
+    _ingestion_date     STRING    COMMENT 'Fecha UTC de ingesta',
+    _source_system      STRING    COMMENT 'Sistema fuente: GEE_ERA5',
+    _file_name          STRING    COMMENT 'Nombre del CSV fuente (era5.csv)'
+)
+COMMENT 'Datos climáticos ERA5-Land por ciudad y mes — temperatura y precipitación'
+PARTITIONED BY (
+    year    INT     COMMENT 'Año de la observación',
+    country STRING  COMMENT 'Código ISO-2 del país'
+)
+STORED AS PARQUET
+LOCATION 'hdfs:///user/gtp/bronze/era5_raw'
+TBLPROPERTIES (
+    'parquet.compression'   = 'SNAPPY',
+    'transactional'         = 'false',
+    'immutable'             = 'true',
+    'created_by'            = 'GTP_bronze_ingest.py'
+);
+
+-- =============================================================================
+-- TABLA 8: S5P Aerosol — Índice de Aerosol UV (UVAI)
+-- Fuente: Google Earth Engine, colección COPERNICUS/S5P/OFFL/L3_AER_AI
+-- Granularidad: ciudad × mes
+-- Ingesta: s5p_aerosol_extract.py vía GEE reduceRegion
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS bronze_s5p_aerosol_raw (
+    city                STRING    COMMENT 'Código ciudad FUA',
+    month               INT       COMMENT 'Mes (1–12)',
+    uvai_mean           DOUBLE    COMMENT 'Índice UV de aerosoles absorbentes (adimensional)',
+    uvai_std            DOUBLE    COMMENT 'Desviación estándar espacial del UVAI',
+    uvai_valid_pixels   INT       COMMENT 'Número de píxeles válidos',
+    -- Metadata
+    _ingestion_date     STRING    COMMENT 'Fecha UTC de ingesta',
+    _source_system      STRING    COMMENT 'Sistema fuente: GEE_S5P_AER',
+    _file_name          STRING    COMMENT 'Nombre del CSV fuente (s5p_aerosol.csv)'
+)
+COMMENT 'Índice de aerosol UV Sentinel-5P por ciudad y mes (proxy calidad del aire)'
+PARTITIONED BY (
+    year    INT,
+    country STRING
+)
+STORED AS PARQUET
+LOCATION 'hdfs:///user/gtp/bronze/s5p_aerosol_raw'
+TBLPROPERTIES (
+    'parquet.compression'   = 'SNAPPY',
+    'transactional'         = 'false',
+    'immutable'             = 'true',
+    'created_by'            = 'GTP_bronze_ingest.py'
+);
+
+-- =============================================================================
+-- TABLA 9: Urban Atlas (ESA WorldCover) — Uso de suelo
+-- Fuente: Google Earth Engine, ESA/WorldCover/v100 (2020) y v200 (2021)
+-- Granularidad: ciudad × año (solo 2020 y 2021 disponibles)
+-- Ingesta: urban_atlas_extract.py vía GEE frequencyHistogram
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS bronze_urban_atlas_raw (
+    city                STRING    COMMENT 'Código ciudad FUA',
+    wc_tree_pct         DOUBLE    COMMENT '% píxeles con cobertura arbórea (clase 10)',
+    wc_shrub_pct        DOUBLE    COMMENT '% matorral (clase 20)',
+    wc_grass_pct        DOUBLE    COMMENT '% pradera/herbazal (clase 30)',
+    wc_crop_pct         DOUBLE    COMMENT '% cultivos (clase 40)',
+    wc_built_pct        DOUBLE    COMMENT '% urbanizado/construido (clase 50)',
+    wc_bare_pct         DOUBLE    COMMENT '% suelo desnudo (clase 60)',
+    wc_water_pct        DOUBLE    COMMENT '% aguas permanentes (clase 80)',
+    -- Metadata
+    _ingestion_date     STRING    COMMENT 'Fecha UTC de ingesta',
+    _source_system      STRING    COMMENT 'Sistema fuente: GEE_WorldCover',
+    _file_name          STRING    COMMENT 'Nombre del CSV fuente (urban_atlas.csv)'
+)
+COMMENT 'Distribución de uso de suelo ESA WorldCover por ciudad y año (2020–2021)'
+PARTITIONED BY (
+    year    INT     COMMENT 'Año del mapa WorldCover (2020 o 2021)',
+    country STRING  COMMENT 'Código ISO-2 del país'
+)
+STORED AS PARQUET
+LOCATION 'hdfs:///user/gtp/bronze/urban_atlas_raw'
+TBLPROPERTIES (
+    'parquet.compression'   = 'SNAPPY',
+    'transactional'         = 'false',
+    'immutable'             = 'true',
+    'created_by'            = 'GTP_bronze_ingest.py'
+);
+
+-- =============================================================================
+-- TABLA 10: EDGAR CO2 — Emisiones nacionales de CO2 fósil
+-- Fuente: EDGAR v8.0 FT2022 (JRC/EU Commission), descarga automática HTTP
+-- Granularidad: ciudad × año (expandido desde país × año)
+-- Ingesta: edgar_co2_extract.py
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS bronze_edgar_co2_raw (
+    city                STRING    COMMENT 'Código ciudad FUA (valor heredado del país)',
+    co2_kt              DOUBLE    COMMENT 'Emisiones CO2 fósil totales del país (kt CO2/año)',
+    -- Metadata
+    _ingestion_date     STRING    COMMENT 'Fecha UTC de ingesta',
+    _source_system      STRING    COMMENT 'Sistema fuente: EDGAR_CO2',
+    _file_name          STRING    COMMENT 'Nombre del CSV fuente (edgar_co2.csv)'
+)
+COMMENT 'Emisiones CO2 fósil EDGAR por ciudad/país y año (1970–2022)'
+PARTITIONED BY (
+    year         INT     COMMENT 'Año de la observación',
+    country_code STRING  COMMENT 'Código ISO-2 del país'
+)
+STORED AS PARQUET
+LOCATION 'hdfs:///user/gtp/bronze/edgar_co2_raw'
+TBLPROPERTIES (
+    'parquet.compression'   = 'SNAPPY',
+    'transactional'         = 'false',
+    'immutable'             = 'true',
+    'created_by'            = 'GTP_bronze_ingest.py'
+);
+
+-- =============================================================================
 -- FIN BRONZE DDL
--- Total tablas: 6
--- Convención de particionado: year=YYYY/country=XX (o country_code=XX para finance)
+-- Total tablas: 10
+-- Convención de particionado: year=YYYY/country=XX (o country_code=XX para finance/edgar)
 -- Para registrar particiones manualmente tras carga Parquet directa:
 --   MSCK REPAIR TABLE gtp_bronze.bronze_sentinel2_raw;
+--   MSCK REPAIR TABLE gtp_bronze.bronze_era5_raw;
+--   MSCK REPAIR TABLE gtp_bronze.bronze_s5p_aerosol_raw;
+--   MSCK REPAIR TABLE gtp_bronze.bronze_urban_atlas_raw;
+--   MSCK REPAIR TABLE gtp_bronze.bronze_edgar_co2_raw;
 -- =============================================================================

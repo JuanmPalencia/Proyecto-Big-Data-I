@@ -78,7 +78,7 @@ flask-cors
 # -----------------------------
 # PostgreSQL / Serving Layer
 # -----------------------------
-psycopg2-binary
+pymysql
 SQLAlchemy
 
 # -----------------------------
