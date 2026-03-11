@@ -1,172 +1,259 @@
-import os
+"""
+Sentinel-2_extract.py — GTP (Green Turning Point)
+Extrae estadísticas NDVI mensuales por ciudad usando Google Earth Engine.
+
+Estrategia: reduceRegion en GEE (sin descargar GeoTIFFs).
+GEE calcula la mediana mensual de NDVI, aplica máscara de nubes y devuelve
+un único valor numérico por ciudad×mes — sin descarga de imágenes.
+
+Output: DatosProcesados/sentinel2.csv
+Columnas: City, Year, Month, NDVI_Mean, NDVI_Std, pixel_count
+
+Ventajas vs descarga de GeoTIFFs:
+  - Sin descargas (TB de datos → cero bytes locales)
+  - Sin rasterio (GEE hace la agregación en sus servidores)
+  - Idempotente: reanuda desde donde se quedó si se interrumpe
+  - Reintentos automáticos con backoff exponencial
+
+Ejecución:
+  python Sentinel-2_extract.py
+  python Sentinel-2_extract.py --start-year 2020 --workers 6
+"""
+
+import csv
 import time
 import random
+import calendar
 import datetime
-import requests
-import ee
+import threading
+import argparse
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import config  # Importamos configuración centralizada
 
-# --- CONFIGURACIÓN DE DESCARGA ---
+import ee
+import config
+
+# ==============================================================================
+# CONFIGURACIÓN
+# ==============================================================================
 GOOGLE_PROJECT = "gtpuem"
-START_YEAR = 2018
-OUTPUT_DIR = config.DATA_DIR / "sentinel2"
+START_YEAR     = 2018
+SCALE_M        = 60          # metros por píxel para reduceRegion
+MAX_WORKERS    = 8           # hilos paralelos (GEE soporta 8-10 bien)
+MAX_RETRIES    = 4           # reintentos ante error GEE
+BUFFER_M       = 20_000      # radio buffer alrededor del centroide (20 km)
 
-# Sentinel-2 tiene 10m de resolución nativa. 
-# Para un estudio continental, 10m es demasiado pesado (TB de datos).
-# 60m es un estándar científico aceptable para análisis urbano macro.
-SCALE_M = 60 
-MAX_WORKERS = 12 
+OUTPUT_CSV  = config.INPUT_DIR_PROCESSED / "sentinel2.csv"
+CSV_COLUMNS = ["City", "Year", "Month", "NDVI_Mean", "NDVI_Std", "pixel_count"]
 
-# --- INICIALIZACIÓN GEE ---
+_csv_lock = threading.Lock()
+
+# ==============================================================================
+# INICIALIZACIÓN GEE
+# ==============================================================================
 try:
     ee.Initialize(project=GOOGLE_PROJECT)
     print("[INFO] GEE inicializado correctamente.")
 except Exception as e:
-    raise RuntimeError(f"Fallo de autenticación GEE: {e}")
+    raise RuntimeError(
+        f"Fallo de autenticación GEE: {e}\n"
+        "Ejecuta: earthengine authenticate"
+    )
 
-def robust_request(url, max_retries=5):
-    """
-    Gestión inteligente de reintentos para evitar errores de red o cuota.
-    Si Google dice 'espera', esperamos exponencialmente.
-    """
-    for attempt in range(max_retries):
-        try:
-            response = requests.get(url, stream=True, timeout=60)
-            
-            if response.status_code == 200:
-                return response
-            
-            # Errores temporales (Too Many Requests, Server Error) -> Reintentamos
-            if response.status_code in [429, 500, 502, 503]:
-                wait_time = (2 ** attempt) + random.uniform(0.1, 1.0)
-                time.sleep(wait_time)
-                continue
-            
-            # Otros errores (404, 403) -> Fallamos inmediatamente
-            return None
-            
-        except requests.exceptions.RequestException:
-            time.sleep(2 ** attempt)
-            
-    return None
 
-def get_masked_ndvi_collection(roi, start_date, end_date):
+# ==============================================================================
+# IDEMPOTENCIA — cargar progreso previo
+# ==============================================================================
+def load_done(csv_path: Path) -> set:
+    """Devuelve el conjunto de (City, Year, Month) ya escritos en el CSV."""
+    if not csv_path.exists():
+        return set()
+    done = set()
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            try:
+                done.add((row["City"], int(row["Year"]), int(row["Month"])))
+            except (KeyError, ValueError):
+                pass
+    return done
+
+
+def init_csv(csv_path: Path):
+    """Crea el directorio y la cabecera del CSV si no existe."""
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    if not csv_path.exists():
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(CSV_COLUMNS)
+
+
+def append_row(csv_path: Path, row: tuple):
+    """Escritura thread-safe de una fila al CSV."""
+    with _csv_lock:
+        with open(csv_path, "a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(row)
+
+
+# ==============================================================================
+# GEE — COLECCIÓN NDVI CON MÁSCARA DE NUBES
+# ==============================================================================
+def get_ndvi_collection(roi, start_date: str, end_date: str):
     """
-    Crea una colección de imágenes limpias de nubes y calcula el NDVI.
-    Usa la banda QA60 (Quality Assurance) para eliminar píxeles nublados.
+    Crea una colección Sentinel-2 con máscara de nubes y banda NDVI calculada.
+    Usa S2_SR_HARMONIZED para evitar saltos de calibración históricos.
     """
     def mask_clouds(image):
         qa = image.select('QA60')
-        
-        # Bits 10 y 11 son nubes opacas y cirros respectivamente.
-        # Queremos píxeles donde ambos sean 0.
-        cloud_bit_mask = (1 << 10)
-        cirrus_bit_mask = (1 << 11)
-        
-        mask = qa.bitwiseAnd(cloud_bit_mask).eq(0).And(
-               qa.bitwiseAnd(cirrus_bit_mask).eq(0))
-        
-        # Escalamos los valores de reflectancia (0-10000 -> 0-1)
-        return image.updateMask(mask).divide(10000)
+        cloud_mask  = qa.bitwiseAnd(1 << 10).eq(0)
+        cirrus_mask = qa.bitwiseAnd(1 << 11).eq(0)
+        return (image.updateMask(cloud_mask.And(cirrus_mask))
+                     .divide(10000))  # escalar reflectancia a [0, 1]
 
-    # Usamos la colección Harmonized para evitar saltos de calibración antiguos
-    collection = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
-                  .filterBounds(roi)
-                  .filterDate(start_date, end_date)
-                  # Pre-filtro: descartamos imágenes totalmente cubiertas de nubes
-                  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 60))
-                  .map(mask_clouds))
-    
-    # Añadimos la banda NDVI calculada al vuelo
-    # Fórmula: (NIR - RED) / (NIR + RED)
-    return collection.map(lambda img: img.addBands(img.normalizedDifference(['B8', 'B4']).rename('NDVI')))
+    return (
+        ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+        .filterBounds(roi)
+        .filterDate(start_date, end_date)
+        .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 60))
+        .map(mask_clouds)
+        .map(lambda img: img.addBands(
+            img.normalizedDifference(['B8', 'B4']).rename('NDVI')
+        ))
+    )
 
-def process_city_date(task_payload):
+
+# ==============================================================================
+# WORKER — procesa una ciudad×mes
+# ==============================================================================
+def process_city_month(task: tuple):
     """
-    Worker: Procesa una ciudad y fecha, genera la imagen mediana y la descarga.
-    """
-    city, (lat, lon), year, month, output_dir = task_payload
-    
-    filename = f"{city}_NDVI_{year}-{month:02d}"
-    city_dir = output_dir / city
-    zip_path = city_dir / f"{filename}.zip"
-    
-    # Idempotencia
-    if zip_path.exists():
-        return None
+    Calcula NDVI_Mean, NDVI_Std y pixel_count para una ciudad y un mes.
+    Usa GEE reduceRegion: sin descargar ningún archivo.
 
-    # Definimos fechas
-    start = f"{year}-{month:02d}-01"
+    Retorna:
+      - tuple (City, Year, Month, NDVI_Mean, NDVI_Std, pixel_count) si OK
+      - str con prefijo [WARN] si no hay datos válidos ese mes
+      - str con prefijo [ERROR] si hay fallo de GEE o de red
+    """
+    city, (lat, lon), year, month = task
+
     last_day = calendar.monthrange(year, month)[1]
-    end = f"{year}-{month:02d}-{last_day}"
+    start    = f"{year}-{month:02d}-01"
+    end      = f"{year}-{month:02d}-{last_day}"
+    roi      = ee.Geometry.Point([lon, lat]).buffer(BUFFER_M).bounds()
 
-    try:
-        # Área de Interés (ROI): Buffer de 20km alrededor del centro
-        roi = ee.Geometry.Point([lon, lat]).buffer(20000).bounds()
-        
-        col = get_masked_ndvi_collection(roi, start, end)
-        
-        # Reducción: Mediana mensual.
-        # La mediana es excelente para eliminar nubes residuales o sombras
-        # que hayan escapado a la máscara QA60.
-        img_reduced = col.select('NDVI').median().clip(roi)
-        
-        # Pedimos URL de descarga
+    for attempt in range(MAX_RETRIES):
         try:
-            url = img_reduced.getDownloadURL({
-                'name': filename,
-                'crs': 'EPSG:3857', # Web Mercator
-                'scale': SCALE_M,
-                'region': roi,
-                'filePerBand': False
-            })
-        except ee.EEException:
-            # Si falla getDownloadURL suele ser porque la imagen está vacía (todo nubes)
-            return f"[WARN] Sin datos válidos: {filename}"
+            col = get_ndvi_collection(roi, start, end)
+            img = col.select('NDVI').median().clip(roi)
 
-        # Descarga física
-        resp = robust_request(url)
-        if resp:
-            city_dir.mkdir(parents=True, exist_ok=True)
-            with open(zip_path, 'wb') as f:
-                for chunk in resp.iter_content(chunk_size=1024*1024):
-                    f.write(chunk)
-            return f"[OK] Descargado: {filename}"
-        else:
-            return f"[ERROR] Fallo de red: {filename}"
+            # reduceRegion: media + desviación estándar + recuento de píxeles válidos
+            # Todo se calcula en los servidores de GEE — cero bytes descargados
+            reducer = (
+                ee.Reducer.mean()
+                .combine(ee.Reducer.stdDev(),  sharedInputs=True)
+                .combine(ee.Reducer.count(),   sharedInputs=True)
+            )
 
-    except Exception as e:
-        return f"[ERROR] GEE: {filename} -> {e}"
+            stats = img.reduceRegion(
+                reducer=reducer,
+                geometry=roi,
+                scale=SCALE_M,
+                maxPixels=1e8,
+                bestEffort=True   # ajusta escala si maxPixels se supera
+            ).getInfo()
 
+            ndvi_mean = stats.get('NDVI_mean')
+            ndvi_std  = stats.get('NDVI_stdDev', 0.0)
+            n_pixels  = stats.get('NDVI_count',  0)
+
+            if ndvi_mean is None:
+                return f"[WARN] {city} {year}-{month:02d}: sin píxeles válidos (todo nubes)"
+
+            return (
+                city, year, month,
+                round(ndvi_mean, 6),
+                round(ndvi_std or 0.0, 6),
+                int(n_pixels or 0),
+            )
+
+        except ee.EEException as e:
+            if attempt < MAX_RETRIES - 1:
+                wait = (2 ** attempt) + random.uniform(0.5, 2.0)
+                time.sleep(wait)
+            else:
+                return f"[ERROR-GEE] {city} {year}-{month:02d}: {e}"
+        except Exception as e:
+            return f"[ERROR] {city} {year}-{month:02d}: {e}"
+
+    return f"[ERROR] {city} {year}-{month:02d}: máx reintentos alcanzados"
+
+
+# ==============================================================================
+# MAIN
+# ==============================================================================
 def main():
-    print(f"--- INICIANDO DESCARGA SENTINEL-2 (VEGETACIÓN) ---")
-    print(f"Escala: {SCALE_M}m | Hilos: {MAX_WORKERS}")
-    
-    current_date = datetime.datetime.now()
-    tasks = []
-    
-    # Construir cola de trabajo
-    for city, coords in config.EURO_FUAS.items():
-        for year in range(START_YEAR, current_date.year + 1):
-            for month in range(1, 13):
-                if year == current_date.year and month > current_date.month:
-                    break
-                tasks.append((city, coords, year, month, OUTPUT_DIR))
-    
-    print(f"Total imágenes: {len(tasks)}")
-    print("Ejecutando descargas...")
-    
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = [executor.submit(process_city_date, task) for task in tasks]
-        
-        for i, future in enumerate(as_completed(futures)):
-            result = future.result()
-            if result:
-                print(f"[{i+1}/{len(tasks)}] {result}")
+    parser = argparse.ArgumentParser(
+        description="GTP Sentinel-2 NDVI — extracción vía GEE reduceRegion"
+    )
+    parser.add_argument("--start-year", type=int, default=START_YEAR,
+                        help=f"Año de inicio (default: {START_YEAR})")
+    parser.add_argument("--workers", type=int, default=MAX_WORKERS,
+                        help=f"Hilos paralelos (default: {MAX_WORKERS})")
+    args = parser.parse_args()
 
-    print("\n[FIN] Descarga Sentinel-2 completada.")
+    print("=" * 60)
+    print("  GTP — EXTRACCIÓN NDVI (Sentinel-2 via GEE)")
+    print(f"  Escala:     {SCALE_M}m | Buffer: {BUFFER_M//1000}km")
+    print(f"  Hilos:      {args.workers} | Inicio: {args.start_year}")
+    print(f"  Output:     {OUTPUT_CSV}")
+    print("=" * 60)
+
+    init_csv(OUTPUT_CSV)
+    done = load_done(OUTPUT_CSV)
+    print(f"  Registros ya procesados: {len(done):,}")
+
+    now   = datetime.datetime.now()
+    tasks = [
+        (city, coords, year, month)
+        for city, coords in config.EURO_FUAS.items()
+        for year in range(args.start_year, now.year + 1)
+        for month in range(1, 13)
+        if not (year == now.year and month > now.month)
+        and (city, year, month) not in done
+    ]
+
+    print(f"  Pendientes:  {len(tasks):,} ciudad×mes\n")
+
+    ok = warn = err = 0
+
+    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        futures = {executor.submit(process_city_month, t): t for t in tasks}
+
+        for i, future in enumerate(as_completed(futures), 1):
+            result = future.result()
+
+            if isinstance(result, tuple):
+                append_row(OUTPUT_CSV, result)
+                ok += 1
+            elif isinstance(result, str) and "[WARN]" in result:
+                warn += 1
+                if warn % 200 == 0:
+                    print(result)
+            else:
+                err += 1
+                print(result)
+
+            if i % 1000 == 0:
+                print(f"  [{i:,}/{len(tasks):,}] OK={ok:,} | WARN={warn:,} | ERR={err:,}")
+
+    print()
+    print("=" * 60)
+    print(f"  FIN — NDVI extraído")
+    print(f"  Filas escritas: {ok:,}")
+    print(f"  Sin datos (nubes): {warn:,}")
+    print(f"  Errores GEE: {err:,}")
+    print(f"  Output: {OUTPUT_CSV}")
+    print("=" * 60)
+
 
 if __name__ == "__main__":
-    import calendar # Import necesario para el worker
     main()

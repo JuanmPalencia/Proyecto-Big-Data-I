@@ -1,14 +1,15 @@
 from pathlib import Path
 
 # --- CONFIGURACIÓN DE RUTAS ---
-# Detectamos automáticamente dónde está este archivo para construir rutas relativas
+# BASE_DIR = Lorca/ETL/script/ (donde vive este archivo)
+# DATA_DIR = Lorca/data/       (carpeta de datos unificada bajo Lorca/)
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
+DATA_DIR = BASE_DIR.parent.parent / "data"
 
 # Rutas específicas de entrada y salida
 INPUT_DIR_PROCESSED = DATA_DIR / "DatosProcesados"
 OUTPUT_FILE_MASTER = DATA_DIR / "merge.csv"
-INPUT_FILE_FINANCE = BASE_DIR / "finance_2006_2025.csv"
+INPUT_FILE_FINANCE = DATA_DIR / "finance_monthly_2006_2025.csv"
 
 # --- DICCIONARIO MAESTRO DE CIUDADES (EURO_FUAS) ---
 # Centralizamos aquí las coordenadas para no tener copias dispersas en varios scripts.

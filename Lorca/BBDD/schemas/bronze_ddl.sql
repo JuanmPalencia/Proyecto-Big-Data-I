@@ -1,0 +1,229 @@
+-- =============================================================================
+-- GTP (Green Turning Point) — BRONZE LAYER DDL
+-- Capa de datos brutos: append-only, sin transformaciones, con metadata de ingesta.
+-- Motor: Apache Hive sobre HDFS (Lorca cluster UEM)
+-- Formato de almacenamiento: Parquet (compresión Snappy por defecto)
+-- Convención HDFS: hdfs:///user/gtp/bronze/<tabla>/year=YYYY/country=XX/
+-- =============================================================================
+-- NOTA: Ejecutar con: beeline -u "jdbc:hive2://lorca:10000" -f bronze_ddl.sql
+--       o desde PySpark: spark.sql(open("bronze_ddl.sql").read())
+-- =============================================================================
+
+CREATE DATABASE IF NOT EXISTS gtp_bronze
+  COMMENT 'Capa Bronze GTP: datos brutos de ingesta, append-only'
+  LOCATION 'hdfs:///user/gtp/bronze';
+
+USE gtp_bronze;
+
+-- =============================================================================
+-- TABLA 1: Sentinel-2 — Índice de Vegetación (NDVI)
+-- Fuente: Google Earth Engine, colección COPERNICUS/S2_SR_HARMONIZED
+-- Granularidad: ciudad × mes
+-- Ingesta: Sentinel-2_extract.py vía GEE
+-- =============================================================================
+-- Fuente: Sentinel-2_extract.py vía GEE reduceRegion (sin descarga de GeoTIFFs)
+-- Columnas alineadas con el CSV real que produce el ETL
+CREATE TABLE IF NOT EXISTS bronze_sentinel2_raw (
+    city                STRING    COMMENT 'Código ciudad FUA (ej: Madrid_ES)',
+    lat                 DOUBLE    COMMENT 'Latitud central (null en Bronze, se une en Silver desde config.py)',
+    lon                 DOUBLE    COMMENT 'Longitud central (null en Bronze)',
+    month               INT       COMMENT 'Mes (1–12)',
+    ndvi_mean           DOUBLE    COMMENT 'Media de NDVI en el ROI de la ciudad (reduceRegion GEE)',
+    ndvi_std            DOUBLE    COMMENT 'Desviación estándar del NDVI (heterogeneidad espacial)',
+    ndvi_valid_pixels   INT       COMMENT 'Número de píxeles válidos (pixel_count en CSV fuente)',
+    -- Metadata de ingesta (columnas de auditoria, NUNCA modificar en Silver)
+    _ingestion_date     STRING    COMMENT 'Fecha UTC de ingesta (YYYY-MM-DD)',
+    _source_system      STRING    COMMENT 'Sistema fuente: GEE_S2',
+    _file_name          STRING    COMMENT 'Nombre del CSV fuente (sentinel2.csv)'
+)
+COMMENT 'Datos brutos de vegetación Sentinel-2 por ciudad y mes'
+PARTITIONED BY (
+    year    INT     COMMENT 'Año de la observación',
+    country STRING  COMMENT 'Código ISO-2 del país (ej: ES, FR, DE)'
+)
+STORED AS PARQUET
+LOCATION 'hdfs:///user/gtp/bronze/sentinel2_raw'
+TBLPROPERTIES (
+    'parquet.compression'       = 'SNAPPY',
+    'transactional'             = 'false',
+    'immutable'                 = 'true',
+    'created_by'                = 'GTP_bronze_ingest.py',
+    'data_retention_policy'     = 'PERMANENT'
+);
+
+-- =============================================================================
+-- TABLA 2: Sentinel-5P — Dióxido de Nitrógeno en Troposfera (NO2)
+-- Fuente: Google Earth Engine, colección COPERNICUS/S5P/OFFL/L3_NO2
+-- Granularidad: ciudad × mes
+-- Ingesta: Sentinel-5p_extract.py vía GEE
+-- =============================================================================
+-- Fuente: Sentinel-5p_extract.py vía GEE reduceRegion (sin descarga de GeoTIFFs)
+CREATE TABLE IF NOT EXISTS bronze_sentinel5p_raw (
+    city                STRING    COMMENT 'Código ciudad FUA',
+    lat                 DOUBLE    COMMENT 'Latitud central (null en Bronze)',
+    lon                 DOUBLE    COMMENT 'Longitud central (null en Bronze)',
+    month               INT       COMMENT 'Mes (1–12)',
+    no2_mean            DOUBLE    COMMENT 'Densidad media NO2 troposférica (mol/m²), reduceRegion GEE',
+    no2_std             DOUBLE    COMMENT 'Desviación estándar espacial del NO2',
+    no2_valid_pixels    INT       COMMENT 'Píxeles válidos (pixel_count en CSV fuente)',
+    -- Metadata
+    _ingestion_date     STRING    COMMENT 'Fecha UTC de ingesta',
+    _source_system      STRING    COMMENT 'Sistema fuente: GEE_S5P',
+    _file_name          STRING    COMMENT 'Nombre del CSV fuente (s5p.csv)'
+)
+COMMENT 'Datos brutos de calidad del aire Sentinel-5P por ciudad y mes'
+PARTITIONED BY (
+    year    INT,
+    country STRING
+)
+STORED AS PARQUET
+LOCATION 'hdfs:///user/gtp/bronze/sentinel5p_raw'
+TBLPROPERTIES (
+    'parquet.compression'       = 'SNAPPY',
+    'transactional'             = 'false',
+    'immutable'                 = 'true',
+    'created_by'                = 'GTP_bronze_ingest.py'
+);
+
+-- =============================================================================
+-- TABLA 3: HRL (High Resolution Layer) — Impermeabilización del suelo
+-- Fuente: Copernicus Land Service via HRL_extract.py
+-- Granularidad: ciudad × año (dato estructural, no varía mensualmente)
+-- =============================================================================
+-- Fuente: HRL_extract.py (descarga GeoTIFFs EEA) + hrl_to_csv.py (agrega a CSV)
+-- Columnas alineadas con el CSV real que produce hrl_to_csv.py
+CREATE TABLE IF NOT EXISTS bronze_hrl_raw (
+    city                    STRING    COMMENT 'Código ciudad FUA',
+    lat                     DOUBLE    COMMENT 'Latitud central (null en Bronze)',
+    lon                     DOUBLE    COMMENT 'Longitud central (null en Bronze)',
+    imperviousness_mean     DOUBLE    COMMENT 'Impermeabilización media del área urbana (0–100%)',
+    tree_cover_pct          DOUBLE    COMMENT 'Porcentaje de cobertura arbórea — HRL Tree Cover Density',
+    small_woody_mean        DOUBLE    COMMENT 'Porcentaje de elementos leñosos pequeños — HRL Small Woody Features',
+    -- Metadata
+    _ingestion_date         STRING    COMMENT 'Fecha UTC de ingesta',
+    _source_system          STRING    COMMENT 'Sistema fuente: Copernicus_HRL',
+    _file_name              STRING    COMMENT 'Nombre del CSV fuente (hrl.csv)'
+)
+COMMENT 'Datos brutos de impermeabilización del suelo HRL por ciudad y año'
+PARTITIONED BY (
+    year    INT,
+    country STRING
+)
+STORED AS PARQUET
+LOCATION 'hdfs:///user/gtp/bronze/hrl_raw'
+TBLPROPERTIES (
+    'parquet.compression'   = 'SNAPPY',
+    'transactional'         = 'false',
+    'immutable'             = 'true',
+    'created_by'            = 'GTP_bronze_ingest.py'
+);
+
+-- =============================================================================
+-- TABLA 4: YFinance — Datos financieros de empresas verdes
+-- Fuente: Yahoo Finance API vía yfinance (YFinance_extract.py)
+-- Granularidad: empresa (ticker) × año × mes  [MENSUAL — estándar Fama-French]
+-- Volatilidad mensual: std(daily_return) * sqrt(21)  [días bursátiles/mes]
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS bronze_finance_raw (
+    ticker              STRING    COMMENT 'Símbolo bursátil (ej: IBE.MC, ORSTED.CO)',
+    company_name        STRING    COMMENT 'Nombre corto de la empresa',
+    sector              STRING    COMMENT 'Sector GICS de Yahoo Finance',
+    industry            STRING    COMMENT 'Industria Yahoo Finance',
+    country             STRING    COMMENT 'País de cotización (nombre completo, ej: Spain)',
+    fua_country_code    STRING    COMMENT 'Código ISO-2 para cruzar con EURO_FUAS (ej: ES)',
+    month               INT       COMMENT 'Mes (1–12) — granularidad mensual',
+    close_price         DOUBLE    COMMENT 'Precio de cierre promedio mensual ajustado (dividendos+splits)',
+    monthly_return      DOUBLE    COMMENT 'Retorno mensual: (P_final/P_inicial)−1',
+    monthly_volatility  DOUBLE    COMMENT 'Volatilidad mensual: std(daily_return)*sqrt(21)',
+    volume_avg          DOUBLE    COMMENT 'Volumen medio diario negociado en el mes',
+    current_pe          DOUBLE    COMMENT 'PER trailing (snapshot de extracción, no histórico)',
+    current_beta        DOUBLE    COMMENT 'Beta de mercado (snapshot)',
+    extraction_date     STRING    COMMENT 'Fecha UTC de extracción del snapshot',
+    -- Metadata
+    _ingestion_date     STRING    COMMENT 'Fecha UTC de ingesta en HDFS',
+    _source_system      STRING    COMMENT 'Sistema fuente: YFinance',
+    _file_name          STRING    COMMENT 'CSV fuente: finance_monthly_2006_2025.csv'
+)
+COMMENT 'Datos financieros mensuales de empresas del portafolio Green Deal Europe'
+PARTITIONED BY (
+    year    INT,
+    country_code STRING  COMMENT 'Código ISO-2 (igual que fua_country_code, duplicado para partición)'
+)
+STORED AS PARQUET
+LOCATION 'hdfs:///user/gtp/bronze/finance_raw'
+TBLPROPERTIES (
+    'parquet.compression'   = 'SNAPPY',
+    'transactional'         = 'false',
+    'immutable'             = 'true',
+    'created_by'            = 'GTP_bronze_ingest.py'
+);
+
+-- =============================================================================
+-- TABLA 5: Eurostat — GDP per cápita
+-- Fuente: Eurostat API (nama_10r_3gdp o nama_10_gdp)
+-- Granularidad: país (NUTS-0) × año
+-- Nota: Usamos GDP per cápita PPS (Purchasing Power Standard) para comparabilidad
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS bronze_eurostat_gdp_raw (
+    geo_code            STRING    COMMENT 'Código geográfico Eurostat (NUTS-0: ES, FR...)',
+    geo_label           STRING    COMMENT 'Nombre del país',
+    unit                STRING    COMMENT 'Unidad de medida Eurostat (PPS_HAB, EUR_HAB, MIO_EUR...)',
+    gdp_value           DOUBLE    COMMENT 'Valor del GDP en la unidad indicada',
+    obs_flag            STRING    COMMENT 'Flag de calidad Eurostat (e=estimado, p=provisional, b=ruptura)',
+    -- Metadata
+    _ingestion_date     STRING,
+    _source_system      STRING    COMMENT 'Sistema fuente: Eurostat_API',
+    _dataset_code       STRING    COMMENT 'Código del dataset Eurostat (ej: nama_10r_3gdp)'
+)
+COMMENT 'GDP per cápita bruto de Eurostat por país y año'
+PARTITIONED BY (
+    year    INT,
+    country STRING
+)
+STORED AS PARQUET
+LOCATION 'hdfs:///user/gtp/bronze/eurostat_gdp_raw'
+TBLPROPERTIES (
+    'parquet.compression'   = 'SNAPPY',
+    'transactional'         = 'false',
+    'immutable'             = 'true',
+    'created_by'            = 'GTP_bronze_ingest.py'
+);
+
+-- =============================================================================
+-- TABLA 6: Eurostat — Población urbana
+-- Fuente: Eurostat API (urb_cpop1 o demo_r_pjanaggr3)
+-- Granularidad: ciudad FUA × año
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS bronze_eurostat_population_raw (
+    city_code           STRING    COMMENT 'Código Eurostat de la ciudad (ej: ES001C — Madrid)',
+    city_name           STRING    COMMENT 'Nombre de la ciudad',
+    geo_code            STRING    COMMENT 'Código NUTS-0 del país',
+    indic_ur            STRING    COMMENT 'Indicador Eurostat (ej: POP — Total Population)',
+    population          BIGINT    COMMENT 'Población de la FUA en el año',
+    obs_flag            STRING    COMMENT 'Flag de calidad Eurostat',
+    -- Metadata
+    _ingestion_date     STRING,
+    _source_system      STRING    COMMENT 'Sistema fuente: Eurostat_API',
+    _dataset_code       STRING
+)
+COMMENT 'Población urbana bruta de Eurostat por ciudad FUA y año'
+PARTITIONED BY (
+    year    INT,
+    country STRING
+)
+STORED AS PARQUET
+LOCATION 'hdfs:///user/gtp/bronze/eurostat_population_raw'
+TBLPROPERTIES (
+    'parquet.compression'   = 'SNAPPY',
+    'transactional'         = 'false',
+    'immutable'             = 'true',
+    'created_by'            = 'GTP_bronze_ingest.py'
+);
+
+-- =============================================================================
+-- FIN BRONZE DDL
+-- Total tablas: 6
+-- Convención de particionado: year=YYYY/country=XX (o country_code=XX para finance)
+-- Para registrar particiones manualmente tras carga Parquet directa:
+--   MSCK REPAIR TABLE gtp_bronze.bronze_sentinel2_raw;
+-- =============================================================================

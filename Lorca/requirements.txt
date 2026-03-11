@@ -57,3 +57,37 @@ openpyxl==3.1.3
 
 pdfplumber==0.9.0
 yfinance
+scipy
+
+# -----------------------------
+# Machine Learning
+# -----------------------------
+xgboost
+scikit-learn
+linearmodels
+statsmodels
+prophet
+joblib
+
+# -----------------------------
+# API Web
+# -----------------------------
+flask
+flask-cors
+
+# -----------------------------
+# PostgreSQL / Serving Layer
+# -----------------------------
+psycopg2-binary
+SQLAlchemy
+
+# -----------------------------
+# Google Earth Engine (Sentinel)
+# -----------------------------
+earthengine-api
+
+# -----------------------------
+# Spark / Parquet (cliente)
+# -----------------------------
+pyarrow
+pyspark

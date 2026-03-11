@@ -37,7 +37,8 @@ def calculate_ndvi_trend(df):
         return slope
 
     # Aplicamos esta lógica ciudad por ciudad.
-    return df.groupby("City").apply(get_slope)
+    # Pasamos solo las columnas necesarias para compatibilidad con pandas >= 2.0
+    return df.groupby("City")[["Year", "NDVI_Mean"]].apply(get_slope)
 
 def load_environmental_data():
     """
@@ -95,16 +96,19 @@ def load_financial_data():
     # El resto es ruido para nuestra tesis de inversión verde.
     df_green = df_fin[df_fin["Industry"].isin(TARGET_SECTORS)].copy()
 
-    # Agregación por País y Año:
-    # Esto es clave: como no tenemos datos financieros por ciudad (aún),
-    # usamos el promedio del país como proxy del mercado local.
-    # Guardamos también la lista de Tickers (empresas) disponibles para que el usuario sepa dónde invertir.
+    # Agregación mensual → anual por País:
+    # El CSV financiero es mensual (una fila por Ticker × Año × Mes).
+    # Agregamos primero a anual: promedio de precios y volatilidades mensuales.
+    # Volatilidad anualizada = avg(monthly_volatility) * sqrt(12).
     fin_agg = df_green.groupby(["FUA_Country_Code", "Year"]).agg({
-        "Ticker": lambda x: list(x.unique()),       # Lista de empresas disponibles
-        "Company_Name": lambda x: list(x.unique()), # Nombres legibles
-        "Close_Price": "mean",                      # Precio promedio del sector
-        "Annual_Volatility": "mean"                 # Riesgo promedio del sector
+        "Ticker": lambda x: list(x.unique()),         # Lista de empresas disponibles
+        "Company_Name": lambda x: list(x.unique()),   # Nombres legibles
+        "Close_Price": "mean",                        # Precio promedio anual
+        "Monthly_Volatility": "mean"                  # Volatilidad mensual media
     }).reset_index()
+    # Anualizar volatilidad: avg_mensual × sqrt(12)
+    fin_agg["Annual_Volatility"] = fin_agg["Monthly_Volatility"] * (12 ** 0.5)
+    fin_agg.drop(columns=["Monthly_Volatility"], inplace=True)
 
     return fin_agg
 
