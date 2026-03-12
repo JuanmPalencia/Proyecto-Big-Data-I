@@ -1,0 +1,21 @@
+# Claude Code — archivos internos del asistente (no subir al repo)
+.claude/
+CLAUDE.md
+HISTORIAL.md
+COMANDOS_SETUP.md
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Entornos Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# IDEs
+.vscode/
+.idea/
