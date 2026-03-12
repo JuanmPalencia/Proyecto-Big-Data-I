@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(psql:*)",
+      "Bash(\"C:\\\\Users\\\\Juanm\\\\Big Data I\\\\Proyecto-Big-Data-I\\\\HISTORIAL.md\":*)",
+      "Bash(cat > \"/c/Users/Juanm/Big Data I/Proyecto-Big-Data-I/Lorca/.env\" << 'EOF'\nPG_HOST=localhost\nPG_PORT=5432\nPG_DB=gtp\nPG_USER=postgres\nPG_PASSWORD=\nEOF)",
+      "Bash(cat > \"/c/Users/Juanm/Big Data I/Proyecto-Big-Data-I/Lorca/.env\" << 'EOF'\nPG_HOST=10.151.30.2\nPG_PORT=3306\nPG_DB=bd_rvm_gtp\nPG_USER=bd_rvm_gtp\nPG_PASSWORD=Sol2026A\nEOF)"
+    ]
+  }
+}
