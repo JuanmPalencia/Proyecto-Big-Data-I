@@ -58,6 +58,8 @@ SCRIPTS_ECONOMICOS = [
     {"file": "pib_ine_extract.py",   "args": []},
     {"file": "eurostat_extract.py",  "args": ["--datasets", "all", "--eager-merge"]},
     {"file": "OECD_extract.py",      "args": ["--pause", "300", "--penalty-429", "300,600,1200"]},
+    # Post-proceso OECD: raw/ → DatosProcesados/oecd_indicators.csv
+    {"file": "oecd_process.py",      "args": []},
     {"file": "InvestEU_extract.py",  "args": ["--what", "all"],
      "env": {
          "INVESTEU_BASE_SLEEP":    "300",
@@ -65,6 +67,8 @@ SCRIPTS_ECONOMICOS = [
          "INVESTEU_TIMEOUT":       "90",
          "INVESTEU_MAX_RETRIES":   "3",
      }},
+    # Post-proceso InvestEU: raw/ → DatosProcesados/investeu_summary.csv
+    {"file": "investeu_process.py",  "args": []},
     {"file": "YFinance_extract.py",  "args": []},
 ]
 

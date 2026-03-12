@@ -69,6 +69,12 @@ SOURCE_CATALOG = [
     (10, "GEE_WORLDCOVER",  "ESA WorldCover Uso Suelo",  "GEE_COLLECTION",  "ESA / Google",
      "https://developers.google.com/earth-engine/datasets/catalog/ESA_WorldCover_v200",
      "2020–2021",    "European FUAs", "Biennial",  "CC BY 4.0"),
+    (11, "OECD_API",        "OECD Env Policy Indicators","API_REST",        "OECD",
+     "https://sdmx.oecd.org/public/rest/data",
+     "2010–present", "OECD members",  "Annual",    "CC BY 4.0"),
+    (12, "InvestEU_EIB",    "InvestEU Final Recipients", "PDF_SCRAPE",      "EIB / EU Commission",
+     "https://www.eib.org/en/projects/beneficiaries/index.htm",
+     "2021–present", "EU27",          "Annual",    "CC BY 4.0"),
 ]
 
 # ==============================================================================
@@ -679,13 +685,41 @@ def build_fact_economic(spark, dim_city):
     else:
         gdp = gdp.withColumn("co2_country_kt", F.lit(None).cast(DoubleType()))
 
+    # --- OECD: indicadores de política ambiental por ciudad × año ---
+    oecd = read_bronze(spark, f"{HDFS_BRONZE}/oecd_raw")
+    if oecd is not None:
+        gdp = gdp.join(
+            oecd.select("city", "year", "eps_index", "env_tax_usd",
+                        "env_expenditure", "ghg_total_kt"),
+            on=["city", "year"], how="left"
+        )
+    else:
+        for col in ["eps_index", "env_tax_usd", "env_expenditure", "ghg_total_kt"]:
+            gdp = gdp.withColumn(col, F.lit(None).cast(DoubleType()))
+
+    # --- InvestEU: inversión verde EIB por ciudad × año ---
+    investeu = read_bronze(spark, f"{HDFS_BRONZE}/investeu_raw")
+    if investeu is not None:
+        gdp = gdp.join(
+            investeu.select("city", "year", "investeu_ops_count", "investeu_total_eur"),
+            on=["city", "year"], how="left"
+        )
+    else:
+        gdp = (
+            gdp
+            .withColumn("investeu_ops_count", F.lit(None).cast(IntegerType()))
+            .withColumn("investeu_total_eur",  F.lit(None).cast(DoubleType()))
+        )
+
     gdp = (
         gdp
-        .withColumn("econ_fact_sk",   F.monotonically_increasing_id() + 1)
-        .withColumn("date_sk",        (F.col("year") * 10000 + 101).cast(IntegerType()))
-        .withColumn("source_sk_gdp",  F.lit(5))
-        .withColumn("source_sk_pop",  F.lit(6))
-        .withColumn("source_sk_co2",  F.lit(8))
+        .withColumn("econ_fact_sk",        F.monotonically_increasing_id() + 1)
+        .withColumn("date_sk",             (F.col("year") * 10000 + 101).cast(IntegerType()))
+        .withColumn("source_sk_gdp",       F.lit(5))
+        .withColumn("source_sk_pop",       F.lit(6))
+        .withColumn("source_sk_co2",       F.lit(8))
+        .withColumn("source_sk_oecd",      F.lit(11))
+        .withColumn("source_sk_investeu",  F.lit(12))
         # Población: no disponible en este CSV — se añade cuando exista el extractor
         .withColumn("fua_population",       F.lit(None).cast(LongType()))
         .withColumn("population_density",   F.lit(None).cast(DoubleType()))
@@ -698,11 +732,15 @@ def build_fact_economic(spark, dim_city):
     )
 
     final_cols = [
-        "econ_fact_sk", "city_sk", "date_sk", "source_sk_gdp", "source_sk_pop", "source_sk_co2",
+        "econ_fact_sk", "city_sk", "date_sk",
+        "source_sk_gdp", "source_sk_pop", "source_sk_co2",
+        "source_sk_oecd", "source_sk_investeu",
         "gdp_pps_per_capita", "gdp_eur_per_capita", "gdp_pps_index",
         "ln_gdp_pps", "ln_gdp_pps_sq", "gdp_growth_rate",
         "fua_population", "population_density", "population_yoy_growth",
         "co2_country_kt",
+        "eps_index", "env_tax_usd", "env_expenditure", "ghg_total_kt",
+        "investeu_ops_count", "investeu_total_eur",
         "_silver_load_date", "year", "country"
     ]
     existing_cols = [c for c in final_cols if c in gdp.columns]

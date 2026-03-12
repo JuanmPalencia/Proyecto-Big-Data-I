@@ -344,8 +344,67 @@ TBLPROPERTIES (
 );
 
 -- =============================================================================
+-- TABLA 11: OECD — Indicadores de política ambiental y emisiones
+-- Fuente: OECD SDMX REST API (env_policy, env_tax, env_expenditure, air_ghg)
+-- Procesado: oecd_process.py (expande país → ciudades)
+-- Granularidad: ciudad × año (valor de país aplicado a todas las ciudades)
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS bronze_oecd_raw (
+    city                STRING    COMMENT 'Código ciudad FUA (valor heredado del país)',
+    eps_index           DOUBLE    COMMENT 'Environmental Policy Stringency Index (OECD)',
+    env_tax_usd         DOUBLE    COMMENT 'Recaudación impuestos ambientales (millones USD)',
+    env_expenditure     DOUBLE    COMMENT 'Gasto público protección ambiental NEEP (% PIB)',
+    ghg_total_kt        DOUBLE    COMMENT 'Emisiones GHG totales del país (kt CO2eq/año)',
+    -- Metadata
+    _ingestion_date     STRING    COMMENT 'Fecha UTC de ingesta',
+    _source_system      STRING    COMMENT 'Sistema fuente: OECD_API',
+    _file_name          STRING    COMMENT 'Nombre del CSV fuente (oecd_indicators.csv)'
+)
+COMMENT 'Indicadores de política ambiental OECD por ciudad/país y año'
+PARTITIONED BY (
+    year    INT     COMMENT 'Año de la observación',
+    country STRING  COMMENT 'Código ISO-2 del país'
+)
+STORED AS PARQUET
+LOCATION 'hdfs:///user/gtp/bronze/oecd_raw'
+TBLPROPERTIES (
+    'parquet.compression'   = 'SNAPPY',
+    'transactional'         = 'false',
+    'immutable'             = 'true',
+    'created_by'            = 'GTP_bronze_ingest.py'
+);
+
+-- =============================================================================
+-- TABLA 12: InvestEU — Inversión verde EIB (beneficiarios finales)
+-- Fuente: EIB InvestEU Final Recipients PDFs (investeu_process.py)
+-- Granularidad: ciudad × año (expandida desde país × año)
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS bronze_investeu_raw (
+    city                    STRING    COMMENT 'Código ciudad FUA (valor heredado del país)',
+    investeu_ops_count      INT       COMMENT 'Nº de operaciones InvestEU en el país y año',
+    investeu_total_eur      DOUBLE    COMMENT 'Importe total de financiación InvestEU (EUR)',
+    -- Metadata
+    _ingestion_date         STRING    COMMENT 'Fecha UTC de ingesta',
+    _source_system          STRING    COMMENT 'Sistema fuente: InvestEU_EIB',
+    _file_name              STRING    COMMENT 'Nombre del CSV fuente (investeu_summary.csv)'
+)
+COMMENT 'Inversión InvestEU/EIB por ciudad/país y año (beneficiarios finales)'
+PARTITIONED BY (
+    year    INT     COMMENT 'Año de la observación',
+    country STRING  COMMENT 'Código ISO-2 del país'
+)
+STORED AS PARQUET
+LOCATION 'hdfs:///user/gtp/bronze/investeu_raw'
+TBLPROPERTIES (
+    'parquet.compression'   = 'SNAPPY',
+    'transactional'         = 'false',
+    'immutable'             = 'true',
+    'created_by'            = 'GTP_bronze_ingest.py'
+);
+
+-- =============================================================================
 -- FIN BRONZE DDL
--- Total tablas: 10
+-- Total tablas: 12
 -- Convención de particionado: year=YYYY/country=XX (o country_code=XX para finance/edgar)
 -- Para registrar particiones manualmente tras carga Parquet directa:
 --   MSCK REPAIR TABLE gtp_bronze.bronze_sentinel2_raw;
@@ -353,4 +412,6 @@ TBLPROPERTIES (
 --   MSCK REPAIR TABLE gtp_bronze.bronze_s5p_aerosol_raw;
 --   MSCK REPAIR TABLE gtp_bronze.bronze_urban_atlas_raw;
 --   MSCK REPAIR TABLE gtp_bronze.bronze_edgar_co2_raw;
+--   MSCK REPAIR TABLE gtp_bronze.bronze_oecd_raw;
+--   MSCK REPAIR TABLE gtp_bronze.bronze_investeu_raw;
 -- =============================================================================

@@ -22,7 +22,7 @@
 13. [Pipeline BBDD — scripts de ingesta y transformación](#13-pipeline-bbdd--scripts-de-ingesta-y-transformación)
 14. [Pipeline ML — los 4 modelos en detalle](#14-pipeline-ml--los-4-modelos-en-detalle)
 15. [Orquestador BBDD — run_pipeline.py](#15-orquestador-bbdd--run_pipelinepy)
-16. [Serving Layer — PostgreSQL + export_to_postgres.py](#16-serving-layer--postgresql--export_to_postgrespy)
+16. [Serving Layer — MariaDB + export_to_postgres.py](#16-serving-layer--mariadb--export_to_postgrespy)
 17. [API Web Flask — endpoints y autenticación](#17-api-web-flask--endpoints-y-autenticación)
 18. [Variables del dataset maestro (merge.py output)](#18-variables-del-dataset-maestro-mergepy-output)
 19. [Reglas de imputación y calidad de datos](#19-reglas-de-imputación-y-calidad-de-datos)
@@ -127,7 +127,7 @@ PASO 7: clustering.py → segmentar ciudades por perfil (K-Means)
 PASO 8: ekc_regression.py → estimar β₁, β₂, Y* por cluster
 PASO 9: xgboost_classifier.py → clasificar fase DEGRADANDO/TURNING/RECUPERANDO
 PASO 10: prophet_forecast.py → forecast NDVI 1Y/3Y/5Y por ciudad
-PASO 11: export_to_postgres.py → Gold → PostgreSQL (serving layer)
+PASO 11: export_to_postgres.py → Gold → MariaDB bd_rvm_gtp (serving layer)
 PASO 12: Flask API → ranking + detalle de ciudad para dashboards
 ```
 
@@ -160,8 +160,8 @@ Fuentes externas
    HDFS Gold completo
    (mismo Gold pero con todos los resultados ML rellenos)
          │
-         ▼ export_to_postgres.py (spark-submit YARN)
-   PostgreSQL  schema gtp.*
+         ▼ export_to_postgres.py (spark-submit YARN) [nombre legacy]
+   MariaDB  bd_rvm_gtp.*  (10.151.30.2:3306)
    (espejo del Gold, <10ms latencia para APIs)
          │
          ▼ Flask API  Lorca/Web/app.py
@@ -181,8 +181,8 @@ Fuentes externas
 | Formato de ficheros | Parquet + Snappy | — | Columnar, comprimido, eficiente |
 | ML Python | XGBoost + scikit-learn + Prophet + linearmodels | — | Modelos ML fuera de MLlib |
 | ML Spark | PySpark MLlib (KMeans) | — | Clustering escalable |
-| Serving layer | PostgreSQL | 14+ | Queries <10ms para API |
-| API | Flask + psycopg2 | — | REST API + auth |
+| Serving layer | MariaDB 10.x (bd_rvm_gtp) | 14+ | Queries <10ms para API |
+| API | Flask + PyMySQL/mysql-connector | — | REST API + auth |
 | ETL fuentes | Python 3.11 + pandas + requests + yfinance + earthengine-api + rasterio | — | Extracción multifuente |
 
 ### 4.3 Ejecución
@@ -310,14 +310,14 @@ Proyecto-Big-Data-I/
 │   │
 │   ├── BBDD/
 │   │   ├── schemas/
-│   │   │   ├── bronze_ddl.sql           DDL Hive: 6 tablas Bronze
-│   │   │   ├── silver_ddl.sql           DDL Hive: 4 dims + 3 facts Silver
-│   │   │   ├── gold_ddl.sql             DDL Hive: 4 tablas Gold
-│   │   │   └── postgres_serving_ddl.sql DDL PostgreSQL: 4 tablas + 4 vistas schema gtp.*
-│   │   ├── bronze_ingest.py             CSVs del ETL → HDFS Bronze (Parquet particionado)
-│   │   ├── silver_transform.py          Bronze → Star Schema Kimball Silver
+│   │   │   ├── bronze_ddl.sql              DDL Hive: 12 tablas Bronze
+│   │   │   ├── silver_ddl.sql              DDL Hive: 4 dims + 3 facts Silver
+│   │   │   ├── gold_ddl.sql                DDL Hive: 4 tablas Gold
+│   │   │   └── mariadb_serving_ddl.sql     DDL MariaDB: 5 tablas + 5 vistas bd_rvm_gtp
+│   │   ├── bronze_ingest.py             CSVs del ETL → HDFS Bronze (Parquet particionado, 12 fuentes)
+│   │   ├── silver_transform.py          Bronze → Star Schema Kimball Silver (SOURCE_CATALOG sk 1-12)
 │   │   ├── gold_build.py                Silver → tablas analíticas Gold
-│   │   ├── export_to_postgres.py        Gold HDFS → PostgreSQL serving layer
+│   │   ├── export_to_postgres.py        Gold HDFS → MariaDB bd_rvm_gtp serving layer (nombre legacy)
 │   │   ├── models/
 │   │   │   ├── __init__.py
 │   │   │   ├── clustering.py            K-Means PySpark (K auto por Silhouette)
@@ -370,17 +370,23 @@ hdfs:///user/gtp/
 
 ## 7. Fuentes de datos — detalle completo
 
-| # | Fuente | Script | Granularidad | Período | Cobertura | Actualización |
-|---|--------|--------|-------------|---------|-----------|--------------|
+| # | Fuente | Script(s) | Granularidad | Período | Cobertura | Actualización |
+|---|--------|-----------|-------------|---------|-----------|--------------|
 | 1 | Sentinel-2 GEE | `Sentinel-2_extract.py` | Ciudad × Mes | 2018–presente | 237 ciudades FUA | Mensual |
-| 2 | Sentinel-5P GEE | `Sentinel-5p_extract.py` | Ciudad × Mes | 2018–presente | 237 ciudades FUA | Mensual |
+| 2 | Sentinel-5P GEE (NO₂) | `Sentinel-5p_extract.py` | Ciudad × Mes | 2018–presente | 237 ciudades FUA | Mensual |
 | 3 | HRL Copernicus | `HRL_extract.py` + `hrl_to_csv.py` | Ciudad × Año | 2018, 2021... | Europa | Trienal |
-| 4 | Yahoo Finance | `YFinance_extract.py` | Empresa × Mes | 2006–presente | 43 tickers verdes | **Mensual** |
-| 5 | Eurostat GDP | `eurostat_extract.py` | País × Año | 2000–presente | EU27+EEA | Anual |
-| 6 | Eurostat Población | `eurostat_extract.py` | Ciudad × Año | 2000–presente | EU27+EEA | Anual |
-| 7 | OECD | `OECD_extract.py` | País × Año | variable | OCDE | Anual |
-| 8 | INE (España) | `pib_ine_extract.py` | Provincia × Año | 2000–presente | España | Anual |
-| 9 | InvestEU / EIB | `InvestEU_extract.py` | Proyecto | ad hoc | EU | Anual |
+| 4 | Yahoo Finance | `YFinance_extract.py` | Empresa × Mes | 2006–presente | 43 tickers verdes | Mensual |
+| 5 | Eurostat GDP + Población | `Eurostat_extract.py` | Ciudad/País × Año | 2000–presente | EU27+EEA | Anual |
+| 6 | ERA5-Land (clima) | `era5_extract.py` | Ciudad × Año | 1950–presente | Global | Anual |
+| 7 | Sentinel-5P GEE (UVAI) | `s5p_aerosol_extract.py` | Ciudad × Año | 2018–presente | 237 ciudades FUA | Anual |
+| 8 | ESA WorldCover | `urban_atlas_extract.py` | Ciudad × Año | 2020–2021 | Global | Bienal |
+| 9 | EDGAR CO₂ v8 | `edgar_co2_extract.py` | País × Año | 1970–presente | Global | Anual |
+| 10 | OECD Env Policy | `OECD_extract.py` + `oecd_process.py` | País → Ciudad × Año | 2000–presente | OCDE | Anual |
+| 11 | InvestEU / EIB | `InvestEU_extract.py` + `investeu_process.py` | País → Ciudad × Año | 2021–presente | EU | Anual |
+
+**Fuentes raw OECD/InvestEU:**
+- `data/raw/oecd/` — CSVs SDMX (env_policy, env_tax, env_expenditure, air_ghg)
+- `data/raw/investeu/` — final_recipients*.csv (tabla EIB de beneficiarios)
 
 ### 7.1 EURO_FUAS — las 237 ciudades
 
@@ -478,10 +484,64 @@ Columnas salida: `Ticker, Company_Name, Sector, Industry, Country, FUA_Country_C
 
 Fichero: `finance_monthly_2006_2025.csv`
 
-### 8.6 `merge.py` — Dataset maestro
+### 8.6 `era5_extract.py` — Temperatura y precipitación anual
+
+- **API:** GEE — colección `ECMWF/ERA5_LAND/MONTHLY_AGGR`
+- **Método:** `reduceRegion` por ciudad FUA, agregación anual
+- **Salida:** `era5_climate.csv`
+
+Columnas: `City, Year, Temp_Annual_Mean_C, Precip_Annual_Sum_m`
+
+### 8.7 `s5p_aerosol_extract.py` — UVAI aerosol anual
+
+- **API:** GEE — Sentinel-5P UVAI `COPERNICUS/S5P/OFFL/L3_AER_AI`
+- **Salida:** `s5p_aerosol.csv`
+
+Columnas: `City, Year, UVAI_Annual_Mean`
+
+### 8.8 `urban_atlas_extract.py` — Cobertura suelo ESA WorldCover
+
+- **API:** GEE — `ESA/WorldCover/v200`
+- **Años disponibles:** 2020 y 2021
+- **Salida:** `worldcover.csv`
+
+Columnas: `City, Year, WC_Tree_Pct, WC_Built_Pct, WC_Crop_Pct, WC_Natural_Pct`
+
+### 8.9 `edgar_co2_extract.py` — Emisiones CO₂ nacionales EDGAR v8
+
+- **Fuente:** EDGAR v8 (descarga directa)
+- **Mapeo:** ISO3 → ISO2 para unir con EURO_FUAS
+- **Salida:** `edgar_co2.csv`
+
+Columnas: `country_code, Year, CO2_Country_kt`
+
+### 8.10 `oecd_process.py` — Indicadores política ambiental OECD
+
+- **Input:** `data/raw/oecd/` — CSVs SDMX con columnas `REF_AREA, TIME_PERIOD, OBS_VALUE`
+- **Procesamiento:** mapeo ISO3→ISO2, expansión país→ciudades con EURO_FUAS
+- **Salida:** `DatosProcesados/oecd_indicators.csv`
+
+Columnas: `City, Year, EPS_Index, Env_Tax_USD, Env_Expenditure, GHG_Total_kt`
+
+- `EPS_Index`: Environmental Policy Stringency index (0–6, OECD)
+- `Env_Tax_USD`: recaudación impuestos ambientales (mill. USD)
+- `Env_Expenditure`: gasto en protección ambiental (% PIB, NEEP)
+- `GHG_Total_kt`: suma de todos los gases GHG (kt CO₂eq)
+
+### 8.11 `investeu_process.py` — Financiación verde InvestEU/EIB
+
+- **Input:** `data/raw/investeu/final_recipients*.csv` (glob)
+- **Año:** extraído de `pdf_url` via regex `20\d{2}` (rango 2021–2030); fallback `extraction_date`; default 2022
+- **Mapeo:** Borrower Country (nombre inglés) → ISO2 via `COUNTRY_NAME_TO_ISO2`
+- **Salida:** `DatosProcesados/investeu_summary.csv`
+
+Columnas: `City, Year, InvestEU_Ops_Count, InvestEU_Total_EUR`
+
+### 8.12 `merge.py` — Dataset maestro
 
 Fusiona todos los CSVs en un único dataset panel `[city, year, ...]` listo para análisis EKC:
-- Join por `city` y `year`
+- Join por `city` y `year` (left join sobre base Sentinel-2)
+- Incluye OECD (paso 4) e InvestEU (paso 5)
 - Calcula `ln_gdp_pps` y `ln_gdp_pps_sq` para la regresión
 - Calcula `ndvi_trend_slope` por ciudad (regresión lineal simple sobre series temporales)
 - Produce el CSV maestro que es el input directo de `bronze_ingest.py`
@@ -642,6 +702,74 @@ spark-submit \
 | Metadata | — | — |
 | **year** | INT | **Partición** |
 | **country** | STRING | **Partición** |
+
+### 10.7 `bronze_era5_raw`
+
+| Columna | Tipo | Descripción |
+|---------|------|-------------|
+| city | STRING | Código FUA |
+| temp_annual_mean_c | DOUBLE | Temperatura media anual (°C) |
+| precip_annual_sum_m | DOUBLE | Precipitación anual acumulada (m) |
+| Metadata | — | — |
+| **year** | INT | **Partición** |
+| **country** | STRING | **Partición** |
+
+### 10.8 `bronze_s5p_aerosol_raw`
+
+| Columna | Tipo | Descripción |
+|---------|------|-------------|
+| city | STRING | Código FUA |
+| uvai_annual_mean | DOUBLE | UV Aerosol Index medio anual (Sentinel-5P UVAI) |
+| Metadata | — | — |
+| **year** | INT | **Partición** |
+| **country** | STRING | **Partición** |
+
+### 10.9 `bronze_worldcover_raw`
+
+| Columna | Tipo | Descripción |
+|---------|------|-------------|
+| city | STRING | Código FUA |
+| wc_tree_pct | DOUBLE | % cobertura árbol (ESA WorldCover clase 10) |
+| wc_built_pct | DOUBLE | % área construida (clase 50) |
+| wc_crop_pct | DOUBLE | % cultivos (clases 40/60) |
+| wc_natural_pct | DOUBLE | % vegetación natural (resto) |
+| Metadata | — | — |
+| **year** | INT | **Partición** (2020 o 2021) |
+| **country** | STRING | **Partición** |
+
+### 10.10 `bronze_edgar_co2_raw`
+
+| Columna | Tipo | Descripción |
+|---------|------|-------------|
+| country_code | STRING | ISO-2 del país |
+| co2_country_kt | DOUBLE | Emisiones CO₂ totales del país (kt) |
+| Metadata | — | — |
+| **year** | INT | **Partición** |
+| **country** | STRING | **Partición** (= country_code) |
+
+### 10.11 `bronze_oecd_raw`
+
+| Columna | Tipo | Descripción |
+|---------|------|-------------|
+| city | STRING | Código FUA (expandido de país→ciudades) |
+| eps_index | DOUBLE | Environmental Policy Stringency (0–6) |
+| env_tax_usd | DOUBLE | Recaudación impuestos ambientales (mill. USD) |
+| env_expenditure | DOUBLE | Gasto protección ambiental NEEP (% PIB) |
+| ghg_total_kt | DOUBLE | Emisiones GHG totales (kt CO₂eq, suma todos los gases) |
+| Metadata | — | — |
+| **year** | INT | **Partición** |
+| **country** | STRING | **Partición** (ISO-2) |
+
+### 10.12 `bronze_investeu_raw`
+
+| Columna | Tipo | Descripción |
+|---------|------|-------------|
+| city | STRING | Código FUA (expandido de país→ciudades) |
+| investeu_ops_count | INT | Número de operaciones InvestEU en el país ese año |
+| investeu_total_eur | DOUBLE | Importe total financiación InvestEU (EUR) |
+| Metadata | — | — |
+| **year** | INT | **Partición** |
+| **country** | STRING | **Partición** (ISO-2) |
 
 ---
 
@@ -1164,7 +1292,7 @@ FASE 4: clustering.py         (K-Means → cluster_id en Gold)
 FASE 5: ekc_regression.py     (Panel OLS → ekc_parameters en Gold)
 FASE 6: xgboost_classifier.py (Fase EKC → turning_point_phase en Gold)
 FASE 7: prophet_forecast.py   (Forecast NDVI → forecasts en Gold)
-FASE 8: export_to_postgres.py (Gold HDFS → PostgreSQL serving layer)
+FASE 8: export_to_postgres.py (Gold HDFS → MariaDB bd_rvm_gtp serving layer)
 ```
 
 **Flags de run_pipeline.py:**
@@ -1172,54 +1300,52 @@ FASE 8: export_to_postgres.py (Gold HDFS → PostgreSQL serving layer)
 spark-submit run_pipeline.py --only-models        # Solo fases 4-8
 spark-submit run_pipeline.py --skip-bronze        # Saltar fase 1
 spark-submit run_pipeline.py --skip-silver        # Saltar fase 2
-spark-submit run_pipeline.py --skip-export        # Saltar fase 8 (sin PostgreSQL)
+spark-submit run_pipeline.py --skip-export        # Saltar fase 8 (sin export a MariaDB)
 spark-submit run_pipeline.py --skip-gold          # Saltar gold_build
 ```
 
 ---
 
-## 16. Serving Layer — PostgreSQL + export_to_postgres.py
+## 16. Serving Layer — MariaDB + export_to_postgres.py
 
 **Propósito:** proporcionar consultas <10ms para la API Flask y herramientas BI. HDFS + Spark son excelentes para batch pero lentos para queries interactivas.
 
-### 16.1 Schema PostgreSQL `gtp.*`
+**Servidor:** `10.151.30.2:3306` — MariaDB del cluster Lorca (UEM)
+**BD:** `bd_rvm_gtp` | **Usuario:** `bd_rvm_gtp` | **Contraseña:** `Sol2026A`
+**DDL:** `Lorca/BBDD/schemas/mariadb_serving_ddl.sql`
 
-**4 tablas** (espejo del Gold HDFS):
-- `gtp.fact_kuznets` — tabla principal completa
-- `gtp.city_ranking` — ranking pre-calculado
-- `gtp.ekc_parameters` — parámetros EKC por cluster
-- `gtp.model_results` — outputs ML
+> Nota: el script se llama `export_to_postgres.py` por razones históricas (nombre legacy). Escribe a MariaDB, no a PostgreSQL.
 
-**4 vistas para la API:**
+### 16.1 Tablas MariaDB `bd_rvm_gtp.*`
 
+**5 tablas** (espejo del Gold HDFS + dimensión ciudad):
+- `dim_city` — dimensión ciudad con coordenadas (para mapas Power BI)
+- `fact_kuznets` — tabla central EKC (ciudad × año, ~85 columnas)
+- `city_ranking` — ranking pre-calculado con rank_position y score_change
+- `ekc_parameters` — parámetros de regresión EKC por cluster y año
+- `model_results` — outputs detallados de los 4 modelos ML
+
+**5 vistas para Power BI / API:**
+- `v_powerbi_map` — mapa europeo último año (incluye lat/lon, eps_index, investeu_total_eur)
+- `v_turning_opportunities` — ciudades en fase TURNING ordenadas por investment_score
+- `v_ekc_summary` — resumen EKC por cluster (último año estimado)
+- `v_top_20_cities` — top 20 ciudades del último año
+- `v_phase_distribution` — distribución de fases por país y año
+
+**Nuevas columnas OECD/InvestEU en `fact_kuznets`:**
 ```sql
--- Ciudades con oportunidad de inversión
-CREATE VIEW gtp.v_top_opportunities AS
-SELECT * FROM gtp.city_ranking
-WHERE investment_recommendation IN ('STRONG_BUY', 'BUY')
-ORDER BY investment_score DESC;
+eps_index           DOUBLE,     -- Environmental Policy Stringency (0–6)
+env_tax_usd         DOUBLE,     -- Recaudación impuestos ambientales (mill. USD)
+env_expenditure     DOUBLE,     -- Gasto protección ambiental NEEP (% PIB)
+ghg_total_kt        DOUBLE,     -- Emisiones GHG totales del país (kt CO2eq)
+investeu_ops_count  INTEGER,    -- Nº operaciones InvestEU en el país y año
+investeu_total_eur  DOUBLE,     -- Importe total financiación InvestEU (EUR)
+```
 
--- Ciudades en turning point ahora
-CREATE VIEW gtp.v_turning_cities AS
-SELECT * FROM gtp.fact_kuznets
-WHERE turning_point_phase = 'TURNING';
-
--- Resumen por cluster
-CREATE VIEW gtp.v_cluster_summary AS
-SELECT cluster_label, COUNT(*) as n_cities,
-       AVG(investment_score) as avg_score,
-       AVG(green_index) as avg_green_index
-FROM gtp.fact_kuznets
-GROUP BY cluster_label;
-
--- Resumen por país
-CREATE VIEW gtp.v_country_summary AS
-SELECT country_code, country_name,
-       COUNT(DISTINCT city_code) as n_cities,
-       AVG(investment_score) as avg_score,
-       AVG(green_index) as avg_green_index
-FROM gtp.city_ranking
-GROUP BY country_code, country_name;
+**Conexión Power BI:**
+```
+Inicio > Obtener datos > Base de datos > MySQL
+Servidor: 10.151.30.2:3306   Base de datos: bd_rvm_gtp
 ```
 
 ### 16.2 Modos de exportación
@@ -1228,11 +1354,20 @@ GROUP BY country_code, country_name;
 # Modo Spark (JDBC desde Lorca — usa los recursos del cluster):
 spark-submit export_to_postgres.py --mode spark
 
-# Modo local (pandas to_sql — sin Spark, útil para desarrollo):
+# Modo local (pandas — sin Spark, útil para desarrollo):
 python export_to_postgres.py --mode local
 
 # Tabla específica:
 spark-submit export_to_postgres.py --table city_ranking --mode spark
+```
+
+**Variables de entorno requeridas (en Lorca/.env):**
+```bash
+PG_HOST=10.151.30.2
+PG_PORT=3306
+PG_DB=bd_rvm_gtp
+PG_USER=bd_rvm_gtp
+PG_PASSWORD=Sol2026A
 ```
 
 ---
@@ -1253,7 +1388,7 @@ Datos almacenados en `Lorca/Web/data/users.txt` y `newsletter.txt` (JSONL).
 
 ### 17.2 Endpoints de datos
 
-Todos leen desde PostgreSQL `gtp.*` (configurado via env vars).
+Todos leen desde MariaDB `bd_rvm_gtp.*` (configurado via env vars PG_HOST, PG_PORT, PG_DB, PG_USER, PG_PASSWORD).
 
 | Método | Endpoint | Parámetros | Descripción |
 |--------|----------|-----------|-------------|
@@ -1372,8 +1507,8 @@ El código está completo. Lo que falta es ejecución e infraestructura en Lorca
 | Ejecutar DDL Bronze | `beeline ... -f bronze_ddl.sql` | ⏳ Pendiente |
 | Ejecutar DDL Silver | `beeline ... -f silver_ddl.sql` | ⏳ Pendiente |
 | Ejecutar DDL Gold | `beeline ... -f gold_ddl.sql` | ⏳ Pendiente |
-| Crear schema PostgreSQL | `psql ... -f postgres_serving_ddl.sql` | ⏳ Pendiente |
-| Configurar env vars PostgreSQL | `export PG_HOST=... PG_USER=... PG_PASSWORD=...` | ⏳ Pendiente |
+| Aplicar DDL MariaDB serving layer | `mysql -h 10.151.30.2 ... < mariadb_serving_ddl.sql` | ⏳ Pendiente |
+| Verificar env vars en .env de Lorca | PG_HOST, PG_PORT, PG_DB, PG_USER, PG_PASSWORD ya rellenadas | ✅ Hecho |
 | Test end-to-end en Lorca | `python run_all.py --dry-run` → `python run_all.py` | ⏳ Pendiente |
 | Configurar cron jobs | `crontab -e` | ⏳ Pendiente |
 | Crear e integrar frontend web | Mockup pendiente de revisión | ⏳ Pendiente |

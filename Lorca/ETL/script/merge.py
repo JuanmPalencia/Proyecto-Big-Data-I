@@ -112,14 +112,34 @@ def load_co2_data():
         return pd.DataFrame()
 
     df_co2 = pd.read_csv(co2_path)
-    # Eliminar duplicados: EDGAR puede tener múltiples sectores por país
-    # ya deberían estar sumados por edgar_co2_extract.py, pero por seguridad:
     df_co2 = (
         df_co2
         .groupby(["City", "Year"], as_index=False)["CO2_kt"]
         .sum()
     )
     return df_co2
+
+
+def load_oecd_data():
+    """
+    Carga indicadores OECD de política ambiental.
+    Granularidad: city_code × año (valor de país aplicado a todas las ciudades).
+    """
+    path = config.INPUT_DIR_PROCESSED / "oecd_indicators.csv"
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_csv(path)
+
+
+def load_investeu_data():
+    """
+    Carga resumen InvestEU/EIB de inversión verde.
+    Granularidad: city_code × año (valor de país aplicado a todas las ciudades).
+    """
+    path = config.INPUT_DIR_PROCESSED / "investeu_summary.csv"
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_csv(path)
 
 def load_financial_data():
     """
@@ -179,7 +199,15 @@ def main():
     print(" -> Cargando emisiones CO2 (EDGAR)...")
     df_co2 = load_co2_data()
 
-    # 4. Fusión de Mundos (Merge)
+    # 4. Cargar indicadores OECD
+    print(" -> Cargando indicadores OECD...")
+    df_oecd = load_oecd_data()
+
+    # 5. Cargar datos InvestEU
+    print(" -> Cargando datos InvestEU/EIB...")
+    df_investeu = load_investeu_data()
+
+    # 7. Fusión de Mundos (Merge)
     # Primero necesitamos saber a qué país pertenece cada ciudad.
     # Truco: El formato es 'NombreCiudad_XX', así que extraemos 'XX'.
     df_env["Country_Code"] = df_env["City"].apply(lambda x: x.split("_")[-1] if isinstance(x, str) and "_" in x else None)
@@ -202,7 +230,23 @@ def main():
         df_master = pd.merge(df_master, df_co2[["City", "Year", "CO2_kt"]],
                              on=["City", "Year"], how="left")
 
-    # 4. Guardado
+    # Unir indicadores OECD
+    if not df_oecd.empty:
+        print(" -> Añadiendo indicadores OECD...")
+        oecd_cols = ["City", "Year"] + [c for c in df_oecd.columns
+                                        if c not in ("City", "Year")]
+        df_master = pd.merge(df_master, df_oecd[oecd_cols],
+                             on=["City", "Year"], how="left")
+
+    # Unir InvestEU
+    if not df_investeu.empty:
+        print(" -> Añadiendo datos InvestEU/EIB...")
+        investeu_cols = ["City", "Year"] + [c for c in df_investeu.columns
+                                            if c not in ("City", "Year")]
+        df_master = pd.merge(df_master, df_investeu[investeu_cols],
+                             on=["City", "Year"], how="left")
+
+    # 9. Guardado
     # Nos aseguramos de que la carpeta exista antes de guardar
     config.OUTPUT_FILE_MASTER.parent.mkdir(parents=True, exist_ok=True)
     df_master.to_csv(config.OUTPUT_FILE_MASTER, index=False)

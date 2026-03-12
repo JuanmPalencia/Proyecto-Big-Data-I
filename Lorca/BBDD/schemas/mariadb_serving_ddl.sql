@@ -104,6 +104,16 @@ CREATE TABLE IF NOT EXISTS fact_kuznets (
     wc_crop_pct             DOUBLE,
     wc_natural_pct          DOUBLE,
 
+    -- Política ambiental (OECD)
+    eps_index               DOUBLE,     -- Environmental Policy Stringency (0–6)
+    env_tax_usd             DOUBLE,     -- Recaudación impuestos ambientales (mill. USD)
+    env_expenditure         DOUBLE,     -- Gasto protección ambiental NEEP (% PIB)
+    ghg_total_kt            DOUBLE,     -- Emisiones GHG totales del país (kt CO2eq)
+
+    -- Inversión verde EIB/InvestEU
+    investeu_ops_count      INTEGER,    -- Nº operaciones InvestEU en el país y año
+    investeu_total_eur      DOUBLE,     -- Importe total financiación InvestEU (EUR)
+
     -- Financiero
     fin_tickers             TEXT,
     fin_companies           TEXT,
@@ -272,7 +282,9 @@ SELECT
     fk.temp_annual_mean_c,
     fk.co2_country_kt,
     fk.wc_natural_pct,
-    fk.uvai_annual_mean
+    fk.uvai_annual_mean,
+    fk.eps_index,
+    fk.investeu_total_eur
 FROM fact_kuznets fk
 LEFT JOIN dim_city dc ON fk.city_code = dc.city_code
 WHERE fk.year = (SELECT MAX(year) FROM fact_kuznets);

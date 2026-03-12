@@ -105,19 +105,27 @@ def build_fact_kuznets(spark):
         eco_cols = ["city_sk", "year",
                     "gdp_pps_per_capita", "gdp_eur_per_capita",
                     "ln_gdp_pps", "ln_gdp_pps_sq", "gdp_growth_rate",
-                    "fua_population", "co2_country_kt"]
+                    "fua_population", "co2_country_kt",
+                    "eps_index", "env_tax_usd", "env_expenditure", "ghg_total_kt",
+                    "investeu_ops_count", "investeu_total_eur"]
         # Solo seleccionar columnas que realmente existen en Silver
         eco_cols_existing = [c for c in eco_cols if c in eco.columns]
         fk = fk.join(eco.select(eco_cols_existing), on=["city_sk", "year"], how="left")
     else:
         fk = (fk
-              .withColumn("gdp_pps_per_capita", F.lit(None).cast(DoubleType()))
-              .withColumn("gdp_eur_per_capita", F.lit(None).cast(DoubleType()))
-              .withColumn("ln_gdp_pps",         F.lit(None).cast(DoubleType()))
-              .withColumn("ln_gdp_pps_sq",      F.lit(None).cast(DoubleType()))
-              .withColumn("gdp_growth_rate",    F.lit(None).cast(DoubleType()))
-              .withColumn("fua_population",     F.lit(None).cast(LongType()))
-              .withColumn("co2_country_kt",     F.lit(None).cast(DoubleType())))
+              .withColumn("gdp_pps_per_capita",  F.lit(None).cast(DoubleType()))
+              .withColumn("gdp_eur_per_capita",  F.lit(None).cast(DoubleType()))
+              .withColumn("ln_gdp_pps",          F.lit(None).cast(DoubleType()))
+              .withColumn("ln_gdp_pps_sq",       F.lit(None).cast(DoubleType()))
+              .withColumn("gdp_growth_rate",     F.lit(None).cast(DoubleType()))
+              .withColumn("fua_population",      F.lit(None).cast(LongType()))
+              .withColumn("co2_country_kt",      F.lit(None).cast(DoubleType()))
+              .withColumn("eps_index",           F.lit(None).cast(DoubleType()))
+              .withColumn("env_tax_usd",         F.lit(None).cast(DoubleType()))
+              .withColumn("env_expenditure",     F.lit(None).cast(DoubleType()))
+              .withColumn("ghg_total_kt",        F.lit(None).cast(DoubleType()))
+              .withColumn("investeu_ops_count",  F.lit(None).cast(IntegerType()))
+              .withColumn("investeu_total_eur",  F.lit(None).cast(DoubleType())))
 
     # --- Unir financiero: agregar mensual → anual por país × año ---
     # monthly_volatility = std_diaria * sqrt(21); anualizar: avg_mensual * sqrt(12)

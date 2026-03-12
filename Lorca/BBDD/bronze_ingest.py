@@ -3,18 +3,20 @@ bronze_ingest.py — GTP (Green Turning Point)
 Capa Bronze: ingesta de todos los CSVs del ETL hacia HDFS en formato Parquet.
 
 Fuentes ingestadas:
-  1. sentinel2.csv        → bronze_sentinel2_raw
-  2. s5p.csv              → bronze_sentinel5p_raw
-  3. hrl.csv              → bronze_hrl_raw
-  4. finance_2006_2025.csv → bronze_finance_raw
-  5. eurostat_PIB.csv     → bronze_eurostat_gdp_raw
-  6. era5.csv             → bronze_era5_raw
-  7. s5p_aerosol.csv      → bronze_s5p_aerosol_raw
-  8. urban_atlas.csv      → bronze_urban_atlas_raw
-  9. edgar_co2.csv        → bronze_edgar_co2_raw
+  1.  sentinel2.csv           → bronze_sentinel2_raw
+  2.  s5p.csv                 → bronze_sentinel5p_raw
+  3.  hrl.csv                 → bronze_hrl_raw
+  4.  finance_2006_2025.csv   → bronze_finance_raw
+  5.  eurostat_PIB.csv        → bronze_eurostat_gdp_raw
+  6.  era5.csv                → bronze_era5_raw
+  7.  s5p_aerosol.csv         → bronze_s5p_aerosol_raw
+  8.  urban_atlas.csv         → bronze_urban_atlas_raw
+  9.  edgar_co2.csv           → bronze_edgar_co2_raw
+  10. oecd_indicators.csv     → bronze_oecd_raw
+  11. investeu_summary.csv    → bronze_investeu_raw
 
 Ejecución en Lorca:
-  spark-submit --master yarn bronze_ingest.py [--mode overwrite|append] [--source all|s2|s5p|hrl|finance|eurostat|era5|s5p_aerosol|urban_atlas|edgar_co2]
+  spark-submit --master yarn bronze_ingest.py [--mode overwrite|append] [--source all|s2|s5p|hrl|finance|eurostat|era5|s5p_aerosol|urban_atlas|edgar_co2|oecd|investeu]
 """
 
 import sys
@@ -567,6 +569,92 @@ def ingest_edgar_co2(spark, mode: str):
 
 
 # ==============================================================================
+# INGESTA 10 — OECD Indicadores (EPS, impuestos, gasto, GHG)
+# CSV fuente: DatosProcesados/oecd_indicators.csv
+# Columnas: City, Year, EPS_Index, Env_Tax_USD, Env_Expenditure, GHG_Total_kt
+# ==============================================================================
+def ingest_oecd(spark, mode: str):
+    print("\n[10/11] Ingesta OECD (indicadores política ambiental) ...")
+    path = str(PROCESSED_DIR / "oecd_indicators.csv")
+
+    schema = StructType([
+        StructField("City",            StringType(),  True),
+        StructField("Year",            IntegerType(), True),
+        StructField("EPS_Index",       DoubleType(),  True),
+        StructField("Env_Tax_USD",     DoubleType(),  True),
+        StructField("Env_Expenditure", DoubleType(),  True),
+        StructField("GHG_Total_kt",    DoubleType(),  True),
+    ])
+
+    df = (
+        spark.read
+        .option("header", "true")
+        .option("mode", "DROPMALFORMED")
+        .schema(schema)
+        .csv(path)
+    )
+
+    df = (
+        df
+        .withColumnRenamed("City",            "city")
+        .withColumnRenamed("Year",            "year")
+        .withColumnRenamed("EPS_Index",       "eps_index")
+        .withColumnRenamed("Env_Tax_USD",     "env_tax_usd")
+        .withColumnRenamed("Env_Expenditure", "env_expenditure")
+        .withColumnRenamed("GHG_Total_kt",    "ghg_total_kt")
+    )
+
+    df = df.withColumn("country", extract_country(F.col("city")))
+    df = df.filter(F.col("city").isNotNull() & F.col("year").isNotNull())
+    df = add_metadata(df, "OECD_API", "oecd_indicators.csv")
+    log_stats(df, "OECD")
+
+    write_bronze(df, f"{HDFS_BASE}/oecd_raw", ["year", "country"], mode)
+    repair_table(spark, "gtp_bronze", "bronze_oecd_raw")
+
+
+# ==============================================================================
+# INGESTA 11 — InvestEU (inversión verde EIB)
+# CSV fuente: DatosProcesados/investeu_summary.csv
+# Columnas: City, Year, InvestEU_Ops_Count, InvestEU_Total_EUR
+# ==============================================================================
+def ingest_investeu(spark, mode: str):
+    print("\n[11/11] Ingesta InvestEU (inversión verde EIB) ...")
+    path = str(PROCESSED_DIR / "investeu_summary.csv")
+
+    schema = StructType([
+        StructField("City",                StringType(),  True),
+        StructField("Year",                IntegerType(), True),
+        StructField("InvestEU_Ops_Count",  IntegerType(), True),
+        StructField("InvestEU_Total_EUR",  DoubleType(),  True),
+    ])
+
+    df = (
+        spark.read
+        .option("header", "true")
+        .option("mode", "DROPMALFORMED")
+        .schema(schema)
+        .csv(path)
+    )
+
+    df = (
+        df
+        .withColumnRenamed("City",               "city")
+        .withColumnRenamed("Year",               "year")
+        .withColumnRenamed("InvestEU_Ops_Count", "investeu_ops_count")
+        .withColumnRenamed("InvestEU_Total_EUR", "investeu_total_eur")
+    )
+
+    df = df.withColumn("country", extract_country(F.col("city")))
+    df = df.filter(F.col("city").isNotNull() & F.col("year").isNotNull())
+    df = add_metadata(df, "InvestEU_EIB", "investeu_summary.csv")
+    log_stats(df, "InvestEU")
+
+    write_bronze(df, f"{HDFS_BASE}/investeu_raw", ["year", "country"], mode)
+    repair_table(spark, "gtp_bronze", "bronze_investeu_raw")
+
+
+# ==============================================================================
 # ORQUESTADOR
 # ==============================================================================
 INGESTORS = {
@@ -579,6 +667,8 @@ INGESTORS = {
     "s5p_aerosol":  ingest_s5p_aerosol,
     "urban_atlas":  ingest_urban_atlas,
     "edgar_co2":    ingest_edgar_co2,
+    "oecd":         ingest_oecd,
+    "investeu":     ingest_investeu,
 }
 
 
