@@ -183,7 +183,15 @@ def main():
     # Los datos económicos suelen tener huecos. Usamos interpolación lineal para
     # tener una serie continua anual desde 2000 hasta 2024.
     df_final = pd.concat(all_records, ignore_index=True)
-    
+
+    # Guardar mapa de fuente ANTES de deduplicar (groupby eliminaría la columna Source)
+    source_map = df_final[['City', 'Source']].drop_duplicates(subset=['City']).set_index('City')['Source']
+
+    # Deduplicar: si hay varios registros para el mismo (City, Year) tomamos la media
+    df_final = (
+        df_final.groupby(['City', 'Year'], as_index=False)['Value'].mean()
+    )
+
     # Pivotamos para interpolar por columnas (series temporales)
     df_pivot = df_final.pivot(index='City', columns='Year', values='Value')
     
@@ -197,8 +205,7 @@ def main():
     # Volvemos a formato tabla (Long format)
     df_out = df_interpolated.reset_index().melt(id_vars='City', var_name='Year', value_name='GDP_Per_Capita')
     
-    # Recuperamos la fuente original (Metadata)
-    source_map = df_final[['City', 'Source']].drop_duplicates(subset=['City']).set_index('City')['Source']
+    # Recuperamos la fuente original (Metadata) — source_map ya fue extraído antes del groupby
     df_out['Source'] = df_out['City'].map(source_map)
     
     # Limpieza final

@@ -6,6 +6,15 @@ import yfinance as yf
 import numpy as np
 import config  # Importamos tu configuración centralizada
 
+# Mapeo nombre de país (Yahoo Finance) -> código ISO de 2 letras (usado en EURO_FUAS)
+COUNTRY_TO_CODE = {
+    "Spain": "ES", "France": "FR", "Germany": "DE", "Italy": "IT",
+    "Netherlands": "NL", "Belgium": "BE", "Denmark": "DK", "Norway": "NO",
+    "Sweden": "SE", "Finland": "FI", "United Kingdom": "UK", "Switzerland": "CH",
+    "Ireland": "IE", "Austria": "AT", "Poland": "PL", "Portugal": "PT",
+    "Greece": "GR", "Czech Republic": "CZ", "Hungary": "HU", "Romania": "RO",
+}
+
 # --- CARTERA DE SEGUIMIENTO (GREEN DEAL EUROPE) ---
 # Hemos seleccionado empresas líderes en sus sectores (Best-in-Class)
 # que son fundamentales para la transición ecológica europea.
@@ -74,104 +83,111 @@ def get_safe_info(info_dict, key, default="Unknown"):
 
 def extract_financial_data(tickers, output_path, start_year="2006"):
     """
-    Descarga el histórico de precios y calcula métricas anuales de riesgo/retorno.
+    Descarga el histórico de precios y calcula métricas mensuales de riesgo/retorno.
+    Granularidad mensual: mayor riqueza de señal para análisis de inversión ESG.
+    Volatilidad mensual = std(daily_returns) * sqrt(21) [días bursátiles/mes].
     """
     # Definimos rango temporal
     end_year = str(datetime.now().year)
     start_date = f"{start_year}-01-01"
     end_date = f"{end_year}-12-31"
-    
-    print(f"--- INICIANDO EXTRACCIÓN FINANCIERA (YFINANCE) ---")
+
+    print(f"--- INICIANDO EXTRACCIÓN FINANCIERA MENSUAL (YFINANCE) ---")
     print(f"Rango: {start_date} a {end_date}")
     print(f"Total Tickers: {len(tickers)}")
-    
-    records_annual = []
-    
+
+    records_monthly = []
+
     for i, t in enumerate(tickers):
         try:
             print(f"[{i+1}/{len(tickers)}] Procesando {t}...", end=" ", flush=True)
-            
+
             # Instanciamos el objeto Ticker
             ticker = yf.Ticker(t)
-            
+
             # 1. Descarga Histórico (OHLCV)
             # auto_adjust=True ajusta por dividendos y splits (Vital para retorno real)
             hist = ticker.history(start=start_date, end=end_date, auto_adjust=True)
-            
+
             if hist.empty:
                 print(f"⚠️  Data vacío o ticker deslistado.")
                 continue
 
             # 2. Obtener Metadatos (Sector, Industria, Ratios)
             # Esto es lento porque hace una llamada extra a la API, pero necesario.
-            info = ticker.info 
-            
+            info = ticker.info
+
             # 3. Ingeniería de Características (Financial Feature Engineering)
             # Calculamos el retorno diario para poder medir la volatilidad
             hist['Daily_Return'] = hist['Close'].pct_change()
-            
-            # Agrupamos por Año para alinear con los datos macroeconómicos (Kuznets)
-            grouped = hist.groupby(hist.index.year)
-            
-            years_processed = 0
-            for year, group in grouped:
-                # Necesitamos un mínimo de días cotizados para que el dato sea fiable
-                if len(group) < 50: 
-                    continue 
-                
-                # --- Métrica de Riesgo: Volatilidad Anualizada ---
-                # Desviación estándar diaria * raíz de 252 (días bursátiles promedio).
-                # Esto nos dice cuánto oscila el precio en un año.
-                volatility = group['Daily_Return'].std() * np.sqrt(252)
-                
-                # --- Métrica de Rentabilidad: Retorno Anual ---
+
+            # Agrupamos por Año y Mes para granularidad mensual
+            # Justificación académica: estándar Fama-French; ~1.1M filas vs 13M diario
+            grouped = hist.groupby([hist.index.year, hist.index.month])
+
+            months_processed = 0
+            for (year, month), group in grouped:
+                # Mínimo 15 días cotizados en el mes para que el dato sea fiable
+                # (un mes tiene ~21 días bursátiles; 15 es umbral razonable)
+                if len(group) < 15:
+                    continue
+
+                # --- Métrica de Riesgo: Volatilidad Mensual ---
+                # Desviación estándar diaria * raíz de 21 (días bursátiles/mes).
+                # Convención estándar para volatilidad mensual (vs sqrt(252) anual).
+                volatility = group['Daily_Return'].std() * np.sqrt(21)
+
+                # --- Métrica de Rentabilidad: Retorno Mensual ---
                 # (Precio Final / Precio Inicial) - 1
-                annual_return = (group['Close'].iloc[-1] / group['Close'].iloc[0]) - 1
-                
-                records_annual.append({
+                monthly_return = (group['Close'].iloc[-1] / group['Close'].iloc[0]) - 1
+
+                country_name = get_safe_info(info, "country")
+                records_monthly.append({
                     "Ticker": t,
-                    "Company": get_safe_info(info, "shortName", t),
+                    "Company_Name": get_safe_info(info, "shortName", t),
                     "Sector": get_safe_info(info, "sector"),
                     "Industry": get_safe_info(info, "industry"),
-                    "Country": get_safe_info(info, "country"), # Clave para agrupar por país luego
+                    "Country": country_name,
+                    # Código ISO de 2 letras para cruzar con EURO_FUAS en merge.py
+                    "FUA_Country_Code": COUNTRY_TO_CODE.get(country_name, None),
                     "Year": year,
-                    "Close_Price_Avg": group['Close'].mean(),
-                    "Annual_Return": annual_return,
-                    "Volatility": volatility,
+                    "Month": month,
+                    "Close_Price": group['Close'].mean(),
+                    "Monthly_Return": monthly_return,
+                    "Monthly_Volatility": volatility,
                     "Volume_Avg": group['Volume'].mean(),
-                    
+
                     # Ratios de valoración actuales (Snapshot)
-                    # Útil para saber si la empresa está 'barata' (P/E bajo) hoy.
                     "Current_PE": get_safe_info(info, "trailingPE", None),
                     "Current_Beta": get_safe_info(info, "beta", None),
                     "Extraction_Date": datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 })
-                years_processed += 1
-            
-            print(f"✅ OK ({years_processed} años extraídos)")
-            
+                months_processed += 1
+
+            print(f"✅ OK ({months_processed} meses extraídos)")
+
             # Pausa de cortesía para no saturar la API de Yahoo
             time.sleep(0.3)
-            
+
         except Exception as e:
             print(f"❌ Error crítico en {t}: {e}")
 
     # --- GUARDADO ---
-    if records_annual:
-        df = pd.DataFrame(records_annual)
-        
+    if records_monthly:
+        df = pd.DataFrame(records_monthly)
+
         # Limpieza de duplicados por seguridad
-        df.drop_duplicates(subset=["Ticker", "Year"], inplace=True)
-        df.sort_values(by=["Ticker", "Year"], inplace=True)
-        
+        df.drop_duplicates(subset=["Ticker", "Year", "Month"], inplace=True)
+        df.sort_values(by=["Ticker", "Year", "Month"], inplace=True)
+
         # Aseguramos directorio
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         df.to_csv(output_path, index=False)
-        print(f"\n[ÉXITO] Dataset Financiero generado.")
+        print(f"\n[ÉXITO] Dataset Financiero Mensual generado.")
         print(f" -> Ruta: {output_path}")
         print(f" -> Dimensiones: {df.shape}")
-        print(df[['Ticker', 'Year', 'Annual_Return', 'Volatility']].head())
+        print(df[['Ticker', 'Year', 'Month', 'Monthly_Return', 'Monthly_Volatility']].head())
     else:
         print("\n[WARN] No se generaron datos financieros.")
 
@@ -179,12 +195,12 @@ def extract_financial_data(tickers, output_path, start_year="2006"):
 def main():
     # Parseo de argumentos por si queremos ejecutarlo con opciones personalizadas
     parser = argparse.ArgumentParser(description="ETL Financiero para Green Turning Point")
-    parser.add_argument("--out", default="finance_2006_2025.csv", help="Nombre del archivo de salida")
+    parser.add_argument("--out", default="finance_monthly_2006_2025.csv", help="Nombre del archivo de salida")
     args = parser.parse_args()
 
-    # Usamos config.BASE_DIR para guardar el CSV en la raíz del proyecto (o donde prefieras)
-    output_file = config.BASE_DIR / args.out
-    
+    # Guardamos en data/ junto al resto de CSVs del ETL
+    output_file = config.DATA_DIR / args.out
+
     extract_financial_data(GREEN_TICKERS, output_file)
 
 if __name__ == "__main__":

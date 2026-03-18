@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import config  # Importamos la configuración para no repetir el diccionario de ciudades
 
 # --- CONFIGURACIÓN DE DESCARGA ---
-GOOGLE_PROJECT = "gtpuem"  # Tu ID de proyecto en Google Cloud/GEE
+GOOGLE_PROJECT = "gtpuem23"
 START_YEAR = 2018          # Sentinel-5P empezó a operar fiablemente en 2018
 OUTPUT_DIR = config.DATA_DIR / "sentinel5p"
 
@@ -80,9 +80,10 @@ def process_task(task_args):
     # Guardamos cada ciudad en su propia carpeta para ser ordenados
     city_dir = out_dir / city
     final_path = city_dir / f"{filename}.zip"
-    
-    # Idempotencia: Si ya existe, no lo volvemos a descargar (ahorra tiempo y cuota)
-    if final_path.exists():
+    done_path  = city_dir / f"{filename}.done"
+
+    # Idempotencia: Si ya existe el ZIP o ya fue convertido a CSV (.done), saltar
+    if final_path.exists() or done_path.exists():
         return None 
 
     try:

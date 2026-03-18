@@ -224,7 +224,8 @@ def train_xgboost(train, test, threshold: float = 0.5):
     print(f"  F1 Macro:    {f1_macro:.4f}")
     print(f"  F1 Weighted: {f1_weighted:.4f}")
     print("\n  Report detallado:")
-    print(classification_report(y_test, y_pred, target_names=CLASSES))
+    print(classification_report(y_test, y_pred, target_names=CLASSES,
+                                labels=list(range(len(CLASSES))), zero_division=0))
 
     # Feature importance
     fi = dict(zip(feature_cols, clf.feature_importances_))

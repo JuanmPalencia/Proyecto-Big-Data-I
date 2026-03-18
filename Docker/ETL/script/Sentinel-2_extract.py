@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import config  # Importamos configuración centralizada
 
 # --- CONFIGURACIÓN DE DESCARGA ---
-GOOGLE_PROJECT = "gtpuem"
+GOOGLE_PROJECT = "gtpuem23"
 START_YEAR = 2018
 OUTPUT_DIR = config.DATA_DIR / "sentinel2"
 
@@ -91,9 +91,10 @@ def process_city_date(task_payload):
     filename = f"{city}_NDVI_{year}-{month:02d}"
     city_dir = output_dir / city
     zip_path = city_dir / f"{filename}.zip"
-    
-    # Idempotencia
-    if zip_path.exists():
+    done_path = city_dir / f"{filename}.done"
+
+    # Idempotencia: ya existe el ZIP o ya fue convertido a CSV (marcador .done)
+    if zip_path.exists() or done_path.exists():
         return None
 
     # Definimos fechas

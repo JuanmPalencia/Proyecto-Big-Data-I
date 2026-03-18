@@ -36,7 +36,7 @@ from pyspark.sql.types import (
 # Ajusta HDFS_BASE y ETL_DATA_DIR según el entorno de ejecución.
 # ==============================================================================
 HDFS_BASE       = "hdfs:///user/gtp/bronze"
-# Lorca/BBDD/ → subir un nivel → Lorca/ → data/
+# BBDD/ → subir un nivel → app/ (en Docker) o Lorca/ → data/
 LORCA_BASE      = Path(__file__).resolve().parent.parent
 ETL_DATA        = LORCA_BASE / "data"
 PROCESSED_DIR   = ETL_DATA / "DatosProcesados"
@@ -47,9 +47,9 @@ def _local(p) -> str:
     """
     Convierte una ruta local (Path o str) a URI file:// para que Spark no la
     interprete como una ruta HDFS cuando fs.defaultFS apunta al namenode.
+    Válido tanto en modo local[N] (Docker) como en pseudo-distribuido.
     """
     return f"file://{p}"
-
 
 # Metadata fija de ingesta
 INGESTION_DATE  = datetime.now(timezone.utc).strftime("%Y-%m-%d")

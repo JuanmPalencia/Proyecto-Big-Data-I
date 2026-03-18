@@ -103,8 +103,11 @@ def load_financial_data():
         "Ticker": lambda x: list(x.unique()),       # Lista de empresas disponibles
         "Company_Name": lambda x: list(x.unique()), # Nombres legibles
         "Close_Price": "mean",                      # Precio promedio del sector
-        "Annual_Volatility": "mean"                 # Riesgo promedio del sector
+        "Monthly_Volatility": "mean"                # Volatilidad mensual media del sector
     }).reset_index()
+    # Anualizar volatilidad: vol_anual = vol_mensual * sqrt(12)
+    fin_agg["Annual_Volatility"] = fin_agg["Monthly_Volatility"] * (12 ** 0.5)
+    fin_agg.drop(columns=["Monthly_Volatility"], inplace=True)
 
     return fin_agg
 

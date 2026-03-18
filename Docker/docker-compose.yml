@@ -1,70 +1,280 @@
-# docker-compose.yml
-# Ejecuta:
-# docker-compose --profile etl --profile db up --build
+# =============================================================================
+# GTP (Green Turning Point) — Docker Compose
+# Replica el stack de Lorca para desarrollo y pruebas locales.
+#
+# INFRAESTRUCTURA BASE (sin perfil — siempre arranca):
+#   namenode, datanode, hive-metastore-db, hive-metastore, mariadb
+#
+# PERFILES:
+#   etl      → extracción de datos (run_all.py)
+#   pipeline → BBDD + ML (bronze→silver→gold→modelos→export)
+#   api      → Flask API (localhost:5000)
+#
+# INICIO RÁPIDO:
+#   1. Levantar infraestructura:
+#      docker compose up -d
+#
+#   2. Auth Google Earth Engine (solo primera vez):
+#      docker compose run --rm etl earthengine authenticate
+#
+#   3. Ejecutar ETL (extracción de datos → CSVs):
+#      docker compose --profile etl run --rm etl
+#
+#   4. Ejecutar pipeline BBDD + ML (necesita los CSVs del ETL):
+#      docker compose --profile pipeline run --rm pipeline
+#
+#   5. Levantar la API:
+#      docker compose --profile api up -d api
+#
+# =============================================================================
 
-x-common-env: &common-env
+x-pipeline-env: &pipeline-env
   env_file:
     - .env
+  environment:
+    PG_HOST: mariadb
+    PG_PORT: "3306"
+    PG_DB: bd_rvm_gtp
+    PG_USER: bd_rvm_gtp
+    PG_PASSWORD: Sol2026A
+    SPARK_MASTER: "local[4]"
 
 services:
-  etl:
-    build: .
-    container_name: proyecto-big-data-etl
-    mem_limit: 12g
-    cpus: 4
-    <<: *common-env
-    volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-    environment:
-      INVESTEU_BASE_SLEEP: 300
-      INVESTEU_429_PENALTIES: 300,600,1200
-      INVESTEU_TIMEOUT: 90
-      INVESTEU_MAX_RETRIES: 3
 
-      # ✅ Postgres (docker local) para que tu ETL escriba a SQL
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: "no"
-    profiles: [etl]
+  # ── HDFS ─────────────────────────────────────────────────────────────────────
 
-  postgres:
-    image: postgres:16
-    container_name: proyecto-big-data-postgres
-    <<: *common-env
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: gtp-namenode
+    restart: unless-stopped
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      - "9870:9870"   # NameNode Web UI → http://localhost:9870
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
-      - ./docker/init:/docker-entrypoint-initdb.d
+      - namenode_data:/hadoop/dfs/name
+    environment:
+      CLUSTER_NAME: gtp
+    env_file:
+      - ./docker/hadoop.env
+
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: gtp-datanode
+    restart: unless-stopped
+    ports:
+      - "9864:9864"   # DataNode Web UI → http://localhost:9864
+    volumes:
+      - datanode_data:/hadoop/dfs/data
+    environment:
+      SERVICE_PRECONDITION: "namenode:9870"
+    env_file:
+      - ./docker/hadoop.env
+    depends_on:
+      - namenode
+
+  # ── HIVE METASTORE ────────────────────────────────────────────────────────────
+
+  hive-metastore-db:
+    image: postgres:13-alpine
+    container_name: gtp-hive-metastore-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: metastore
+      POSTGRES_USER: hive
+      POSTGRES_PASSWORD: hive_meta_2026
+    volumes:
+      - hive_metastore_db:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -h 127.0.0.1"]
+      test: ["CMD-SHELL", "pg_isready -U hive -d metastore"]
       interval: 10s
       timeout: 5s
       retries: 10
-    restart: unless-stopped
-    profiles: [db]
 
-  pgadmin:
-    image: dpage/pgadmin4:8
-    container_name: proyecto-big-data-pgadmin
-    <<: *common-env
-    ports:
-      - "8080:80"
+  # ── HIVE SCHEMA INIT — Pre-inicializa el schema Datanucleus en PostgreSQL ────
+  # Sin esto, el metastore inicializa el schema lazily en la primera operación,
+  # lo que puede tardar >10 min y provocar SocketTimeoutException (600s) en el pipeline.
+  # Corre una sola vez; idempotente gracias a -ifNotExists.
+
+  hive-schema-init:
+    image: bde2020/hive:2.3.2-postgresql-metastore
+    container_name: gtp-hive-schema-init
+    # El entrypoint bde2020 hace "exec $@" sin comillas → word-splitting.
+    # Pasamos "bash" + ruta del script como dos args separados (sin espacios internos)
+    # para que exec $@ los expanda correctamente: exec bash /scripts/schema_init.sh
+    command: ["bash", "/scripts/schema_init.sh"]
+    volumes:
+      - ./docker/conf:/scripts:ro
     environment:
-      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+      SERVICE_PRECONDITION: "hive-metastore-db:5432"
+      HIVE_SITE_CONF_javax_jdo_option_ConnectionURL: "jdbc:postgresql://hive-metastore-db/metastore"
+      HIVE_SITE_CONF_javax_jdo_option_ConnectionDriverName: "org.postgresql.Driver"
+      HIVE_SITE_CONF_javax_jdo_option_ConnectionUserName: "hive"
+      HIVE_SITE_CONF_javax_jdo_option_ConnectionPassword: "hive_meta_2026"
+      HIVE_SITE_CONF_datanucleus_autoCreateSchema: "false"
+      HIVE_SITE_CONF_datanucleus_schema_autoCreateAll: "false"
     depends_on:
-      - postgres
+      hive-metastore-db:
+        condition: service_healthy
+    restart: "no"
+
+  hive-metastore:
+    image: bde2020/hive:2.3.2-postgresql-metastore
+    container_name: gtp-hive-metastore
     restart: unless-stopped
-    profiles: [db]
+    command: /opt/hive/bin/hive --service metastore
+    ports:
+      - "9083:9083"   # Thrift Metastore (PySpark enableHiveSupport lo usa)
+    environment:
+      SERVICE_PRECONDITION: "namenode:9870 datanode:9864 hive-metastore-db:5432"
+      HIVE_SITE_CONF_javax_jdo_option_ConnectionURL: "jdbc:postgresql://hive-metastore-db/metastore"
+      HIVE_SITE_CONF_javax_jdo_option_ConnectionDriverName: "org.postgresql.Driver"
+      HIVE_SITE_CONF_javax_jdo_option_ConnectionUserName: "hive"
+      HIVE_SITE_CONF_javax_jdo_option_ConnectionPassword: "hive_meta_2026"
+      HIVE_SITE_CONF_datanucleus_autoCreateSchema: "false"
+      HIVE_SITE_CONF_datanucleus_schema_autoCreateAll: "false"
+      HIVE_SITE_CONF_hive_metastore_uris: "thrift://hive-metastore:9083"
+      HIVE_SITE_CONF_hive_server2_enable_doAs: "false"
+      HIVE_SITE_CONF_hive_metastore_schema_verification: "false"
+    env_file:
+      - ./docker/hadoop.env
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/9083"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 60s
+    depends_on:
+      hive-schema-init:
+        condition: service_completed_successfully
+      hive-metastore-db:
+        condition: service_healthy
+      namenode:
+        condition: service_started
+      datanode:
+        condition: service_started
+
+  # ── MARIADB — SERVING LAYER ───────────────────────────────────────────────────
+  # Mismas credenciales que Lorca para portabilidad.
+
+  mariadb:
+    image: mariadb:10.11
+    container_name: gtp-mariadb
+    restart: unless-stopped
+    ports:
+      - "3307:3306"   # Power BI / Tableau: localhost:3307 / bd_rvm_gtp
+    environment:
+      MARIADB_ROOT_PASSWORD: root_gtp_2026
+      MARIADB_DATABASE: bd_rvm_gtp
+      MARIADB_USER: bd_rvm_gtp
+      MARIADB_PASSWORD: Sol2026A
+    volumes:
+      - mariadb_data:/var/lib/mysql
+      - ./docker/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--su-mysql", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── HDFS INIT — Crea directorios en HDFS (corre una sola vez al arrancar) ─────
+  # Usa WebHDFS REST API (puerto 9870) para crear /user/gtp/* y /user/hive/warehouse.
+  # No requiere config extra: se conecta al namenode por HTTP.
+
+  hdfs-init:
+    image: alpine:3.19
+    container_name: gtp-hdfs-init
+    depends_on:
+      - namenode
+      - datanode
+    command: >
+      sh -c "
+      apk add --no-cache curl > /dev/null 2>&1 &&
+      echo 'Esperando a que el NameNode esté listo...' &&
+      until curl -sf http://namenode:9870/webhdfs/v1/?op=LISTSTATUS > /dev/null 2>&1; do sleep 3; done &&
+      echo 'NameNode listo. Creando directorios HDFS...' &&
+      curl -sf -X PUT 'http://namenode:9870/webhdfs/v1/user?op=MKDIRS&permission=755&user.name=root' &&
+      curl -sf -X PUT 'http://namenode:9870/webhdfs/v1/user/gtp?op=MKDIRS&permission=777&user.name=root' &&
+      curl -sf -X PUT 'http://namenode:9870/webhdfs/v1/user/gtp/bronze?op=MKDIRS&permission=777&user.name=root' &&
+      curl -sf -X PUT 'http://namenode:9870/webhdfs/v1/user/gtp/silver?op=MKDIRS&permission=777&user.name=root' &&
+      curl -sf -X PUT 'http://namenode:9870/webhdfs/v1/user/gtp/gold?op=MKDIRS&permission=777&user.name=root' &&
+      curl -sf -X PUT 'http://namenode:9870/webhdfs/v1/user/gtp/models?op=MKDIRS&permission=777&user.name=root' &&
+      curl -sf -X PUT 'http://namenode:9870/webhdfs/v1/user/hive?op=MKDIRS&permission=755&user.name=root' &&
+      curl -sf -X PUT 'http://namenode:9870/webhdfs/v1/user/hive/warehouse?op=MKDIRS&permission=777&user.name=root' &&
+      echo 'Directorios HDFS creados correctamente'
+      "
+    restart: "no"
+
+  # ── ETL — Extracción de datos ─────────────────────────────────────────────────
+  # Genera los CSVs en data/DatosProcesados/ que consume el pipeline.
+  # GEE: autenticarse una vez con:
+  #   docker compose run --rm etl earthengine authenticate
+
+  etl:
+    build: .
+    container_name: gtp-etl
+    command: python ETL/script/run_all.py
+    <<: *pipeline-env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ~/.config/earthengine:/root/.config/earthengine
+    depends_on:
+      namenode:
+        condition: service_started
+      hive-metastore:
+        condition: service_healthy
+      mariadb:
+        condition: service_healthy
+    profiles: [etl]
+    restart: "no"
+
+  # ── PIPELINE — BBDD + ML ──────────────────────────────────────────────────────
+  # Bronze → Silver → Gold → Clustering → EKC → XGBoost → Prophet → MariaDB
+  # Requiere que el ETL haya generado los CSVs primero.
+
+  pipeline:
+    build: .
+    container_name: gtp-pipeline
+    command: python BBDD/run_pipeline.py
+    <<: *pipeline-env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./exports:/app/exports
+      - ~/.config/earthengine:/root/.config/earthengine
+    depends_on:
+      namenode:
+        condition: service_started
+      hive-metastore:
+        condition: service_healthy
+      mariadb:
+        condition: service_healthy
+    profiles: [pipeline]
+    restart: "no"
+
+  # ── FLASK API ─────────────────────────────────────────────────────────────────
+
+  api:
+    build: .
+    container_name: gtp-api
+    command: python Web/app.py
+    <<: *pipeline-env
+    ports:
+      - "5000:5000"   # http://localhost:5000
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    profiles: [api]
+    restart: unless-stopped
+
+# =============================================================================
+volumes:
+  namenode_data:
+  datanode_data:
+  hive_metastore_db:
+  mariadb_data:
+
+networks:
+  default:
+    name: gtp-network
