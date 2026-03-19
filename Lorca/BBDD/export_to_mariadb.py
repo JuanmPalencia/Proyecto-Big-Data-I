@@ -197,7 +197,7 @@ def export_spark_mode(pg: dict, tables: list, dry_run: bool) -> dict:
     try:
         import pandas as pd
         from sqlalchemy import create_engine
-        conn_str = f"postgresql+psycopg2://{pg['user']}:{pg['password']}@{pg['host']}:{pg['port']}/{pg['database']}"
+        conn_str = f"mysql+pymysql://{pg['user']}:{pg['password']}@{pg['host']}:{pg['port']}/{pg['database']}"
         engine = create_engine(conn_str)
         results["dim_city"] = export_dim_city(engine, dry_run)
     except Exception as e:
