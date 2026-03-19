@@ -394,8 +394,12 @@ def build_dim_company(spark):
         max_sk = existing.agg(F.max("company_sk")).collect()[0][0] or 0
         new_rows = (
             changed
-            .select("ticker", "company_name", "sector", "industry",
-                    "fua_country_code", "country")
+            .select(
+                "ticker", "company_name",
+                F.col("new.sector").alias("sector"),
+                F.col("new.industry").alias("industry"),
+                "fua_country_code", "country"
+            )
             .withColumn("company_sk",       F.monotonically_increasing_id() + max_sk + 1)
             .withColumn("stock_exchange",   F.lit(None).cast(StringType()))
             .withColumn("esg_classification", F.lit("GREEN"))
@@ -676,12 +680,13 @@ def build_fact_economic(spark, dim_city):
             .groupBy("iso2", "year")
             .agg(F.first("co2_kt").alias("co2_country_kt"))
         )
+        edgar_country = edgar_country.withColumnRenamed("year", "_edgar_year")
         gdp = gdp.withColumn("_iso2", F.element_at(F.split(F.col("city"), "_"), -1))
         gdp = gdp.join(
             edgar_country,
-            on=[gdp["_iso2"] == edgar_country["iso2"], gdp["year"] == edgar_country["year"]],
+            on=[gdp["_iso2"] == edgar_country["iso2"], gdp["year"] == edgar_country["_edgar_year"]],
             how="left"
-        ).drop("_iso2", "iso2")
+        ).drop("_iso2", "iso2", "_edgar_year")
     else:
         gdp = gdp.withColumn("co2_country_kt", F.lit(None).cast(DoubleType()))
 
