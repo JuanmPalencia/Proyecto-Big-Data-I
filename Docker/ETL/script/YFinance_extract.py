@@ -81,14 +81,34 @@ def get_safe_info(info_dict, key, default="Unknown"):
     val = info_dict.get(key)
     return val if val is not None else default
 
-def extract_financial_data(tickers, output_path, start_year="2006"):
+def extract_financial_data(tickers, output_path, start_year="2006", overwrite=False):
     """
     Descarga el histórico de precios y calcula métricas mensuales de riesgo/retorno.
     Granularidad mensual: mayor riqueza de señal para análisis de inversión ESG.
     Volatilidad mensual = std(daily_returns) * sqrt(21) [días bursátiles/mes].
+
+    Idempotente: si el CSV existe y tiene datos del mes actual, lo salta (--overwrite para forzar).
     """
+    from datetime import date
+    now = datetime.now()
+
+    # Idempotencia: skip si el CSV existe y tiene datos del mes en curso
+    if not overwrite and output_path.exists():
+        try:
+            existing = pd.read_csv(output_path)
+            if not existing.empty:
+                max_year  = int(existing["Year"].max())
+                max_month = int(existing[existing["Year"] == max_year]["Month"].max())
+                if max_year == now.year and max_month == now.month:
+                    print(f"[SKIP] {output_path.name} ya contiene datos hasta {max_year}-{max_month:02d}. Usa --overwrite para re-extraer.")
+                    return
+                print(f"[INFO] CSV existe hasta {max_year}-{max_month:02d} — actualizando meses nuevos.")
+                start_year = str(max_year)  # solo descarga desde el ultimo año registrado
+        except Exception:
+            pass  # CSV corrupto o vacío → re-extraer
+
     # Definimos rango temporal
-    end_year = str(datetime.now().year)
+    end_year = str(now.year)
     start_date = f"{start_year}-01-01"
     end_date = f"{end_year}-12-31"
 
@@ -115,7 +135,7 @@ def extract_financial_data(tickers, output_path, start_year="2006"):
 
             # 2. Obtener Metadatos (Sector, Industria, Ratios)
             # Esto es lento porque hace una llamada extra a la API, pero necesario.
-            info = ticker.info
+            info = ticker.info or {}
 
             # 3. Ingeniería de Características (Financial Feature Engineering)
             # Calculamos el retorno diario para poder medir la volatilidad
@@ -172,36 +192,39 @@ def extract_financial_data(tickers, output_path, start_year="2006"):
         except Exception as e:
             print(f"❌ Error crítico en {t}: {e}")
 
-    # --- GUARDADO ---
+    # --- GUARDADO (merge incremental con CSV existente) ---
     if records_monthly:
-        df = pd.DataFrame(records_monthly)
+        df_new = pd.DataFrame(records_monthly)
 
-        # Limpieza de duplicados por seguridad
-        df.drop_duplicates(subset=["Ticker", "Year", "Month"], inplace=True)
-        df.sort_values(by=["Ticker", "Year", "Month"], inplace=True)
+        # Merge con CSV existente para no perder datos históricos
+        if output_path.exists():
+            try:
+                df_old = pd.read_csv(output_path)
+                df_new = pd.concat([df_old, df_new], ignore_index=True)
+            except Exception:
+                pass
 
-        # Aseguramos directorio
+        df_new.drop_duplicates(subset=["Ticker", "Year", "Month"], inplace=True)
+        df_new.sort_values(by=["Ticker", "Year", "Month"], inplace=True)
+
         output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        df.to_csv(output_path, index=False)
+        df_new.to_csv(output_path, index=False)
         print(f"\n[ÉXITO] Dataset Financiero Mensual generado.")
         print(f" -> Ruta: {output_path}")
-        print(f" -> Dimensiones: {df.shape}")
-        print(df[['Ticker', 'Year', 'Month', 'Monthly_Return', 'Monthly_Volatility']].head())
+        print(f" -> Dimensiones: {df_new.shape}")
+        print(df_new[['Ticker', 'Year', 'Month', 'Monthly_Return', 'Monthly_Volatility']].head())
     else:
         print("\n[WARN] No se generaron datos financieros.")
 
 # --- ENTRY POINT ---
 def main():
-    # Parseo de argumentos por si queremos ejecutarlo con opciones personalizadas
     parser = argparse.ArgumentParser(description="ETL Financiero para Green Turning Point")
     parser.add_argument("--out", default="finance_monthly_2006_2025.csv", help="Nombre del archivo de salida")
+    parser.add_argument("--overwrite", action="store_true", help="Forzar re-extracción ignorando CSV existente")
     args = parser.parse_args()
 
-    # Guardamos en data/ junto al resto de CSVs del ETL
     output_file = config.DATA_DIR / args.out
-
-    extract_financial_data(GREEN_TICKERS, output_file)
+    extract_financial_data(GREEN_TICKERS, output_file, overwrite=args.overwrite)
 
 if __name__ == "__main__":
     main()

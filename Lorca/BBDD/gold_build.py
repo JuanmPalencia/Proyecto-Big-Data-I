@@ -1,440 +1,543 @@
 """
 gold_build.py — GTP (Green Turning Point)
-Capa Gold: construye tablas analíticas finales desde Silver.
+Capa Gold: lee Silver desde MariaDB y construye tablas analíticas finales.
 
-Tablas generadas:
-  fact_kuznets    — ciudad × año con todos los indicadores + turning point
-  city_ranking    — ranking europeo por investment_score, snapshot anual
-  ekc_parameters  — parámetros EKC por cluster (placeholder hasta que corran los modelos)
-  model_results   — outputs ML unificados (placeholder inicial)
+Schema activo: mariadb_dw_ddl.sql (granularidad MENSUAL)
+  fact_kuznets   PK (city_sk, year, month) — cluster_sk NOT NULL → placeholder 0
+  city_ranking   PK (city_sk, year, month) — rank_change MoM
 
-Nota: ekc_parameters y model_results se rellenan con valores reales
-      DESPUÉS de ejecutar los scripts de modelos ML.
+Flujo:
+  MariaDB Silver (fact_environmental, fact_economic, fact_policy, fact_financial, dim_city)
+    → JOIN en pandas
+    → MariaDB Gold (fact_kuznets, city_ranking)
 
-Ejecución en Lorca:
-  spark-submit --master yarn gold_build.py
+Ejecución:
+  python gold_build.py
 """
 
 import sys
+import math
 import argparse
+import numpy as np
 from datetime import datetime, timezone
 from pathlib import Path
 
-from pyspark.sql import SparkSession, Window
-from pyspark.sql import functions as F
-from pyspark.sql.types import (
-    StructType, StructField, StringType, DoubleType,
-    IntegerType, LongType, BooleanType
-)
-
 # ==============================================================================
-# RUTAS HDFS
+# CONFIGURACION
 # ==============================================================================
-HDFS_SILVER = "hdfs:///user/gtp/silver"
-HDFS_GOLD   = "hdfs:///user/gtp/gold"
-
+CONFIG_FILE    = str(Path(__file__).resolve().parent.parent / "config.ini")
 GOLD_LOAD_DATE = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+BATCH_SIZE = 1000
+
+# cluster_sk placeholder (NOT NULL en DDL; los modelos ML lo actualizan)
+CLUSTER_SK_DEFAULT = 0
+
+
 # ==============================================================================
-# SPARK SESSION
+# DB POOL
 # ==============================================================================
-def get_spark():
-    return (
-        SparkSession.builder
-        .appName("GTP_Gold_Build")
-        .config("spark.sql.shuffle.partitions", "100")
-        .config("spark.sql.parquet.compression.codec", "snappy")
-        .config("hive.exec.dynamic.partition", "true")
-        .config("hive.exec.dynamic.partition.mode", "nonstrict")
-        .enableHiveSupport()
-        .getOrCreate()
-    )
+def get_pool():
+    bbdd_dir = str(Path(__file__).resolve().parent)
+    if bbdd_dir not in sys.path:
+        sys.path.insert(0, bbdd_dir)
+    from db_pool import MariaDBPool
+    return MariaDBPool(config_file=CONFIG_FILE)
+
 
 # ==============================================================================
 # UTILIDADES
 # ==============================================================================
+def sanitize_row(t: tuple) -> tuple:
+    """Replace any float NaN/inf in a tuple with None (MySQL can't handle them)."""
+    result = []
+    for v in t:
+        if isinstance(v, float) and not math.isfinite(v):
+            result.append(None)
+        else:
+            result.append(v)
+    return tuple(result)
 
-def read_silver(spark, table_name: str):
-    path = f"{HDFS_SILVER}/{table_name}"
-    try:
-        return spark.read.parquet(path)
-    except Exception as e:
-        print(f"  [WARN] No se pudo leer silver/{table_name}: {e}")
+
+def batch_upsert(pool, sql: str, rows: list, batch_size: int = BATCH_SIZE):
+    total = len(rows)
+    if total == 0:
+        return
+    clean = [sanitize_row(r) for r in rows]
+    for i in range(0, total, batch_size):
+        pool.execute_many(sql, clean[i: i + batch_size])
+    print(f"    {total:,} filas procesadas")
+
+
+def safe_float(v):
+    if v is None:
         return None
-
-
-def write_gold(df, table_name: str, partition_cols: list, mode: str = "overwrite"):
-    path = f"{HDFS_GOLD}/{table_name}"
-    writer = df.write.mode(mode)
-    if partition_cols:
-        writer = writer.partitionBy(*partition_cols)
-    writer.parquet(path)
-    print(f"  [GOLD] {table_name}: {df.count():,} filas → {path}")
-
-
-def repair_table(spark, table: str):
     try:
-        spark.sql(f"MSCK REPAIR TABLE gtp_gold.{table}")
-    except Exception as e:
-        print(f"  [WARN] MSCK REPAIR gtp_gold.{table}: {e}")
-
-# ==============================================================================
-# TABLA 1: FACT_KUZNETS — Tabla central EKC
-# Join: fact_environmental + fact_economic + fact_financial (por país) + dim_city
-# ==============================================================================
-def build_fact_kuznets(spark):
-    print("\n[GOLD 1/4] Construyendo fact_kuznets ...")
-
-    env  = read_silver(spark, "fact_environmental")
-    eco  = read_silver(spark, "fact_economic")
-    fin  = read_silver(spark, "fact_financial")
-    city = read_silver(spark, "dim_city")
-
-    if env is None or city is None:
-        print("  [ERROR] fact_environmental o dim_city no disponibles. Abortando fact_kuznets.")
-        return None
-
-    # --- Base: ambiental + city metadata ---
-    fk = env.join(
-        city.select("city_sk", "city_code", "city_name", "country_code", "country_name"),
-        on="city_sk", how="left"
-    )
-
-    # --- Unir económico ---
-    if eco is not None:
-        eco_cols = ["city_sk", "year",
-                    "gdp_pps_per_capita", "gdp_eur_per_capita",
-                    "ln_gdp_pps", "ln_gdp_pps_sq", "gdp_growth_rate",
-                    "fua_population", "co2_country_kt",
-                    "eps_index", "env_tax_usd", "env_expenditure", "ghg_total_kt",
-                    "investeu_ops_count", "investeu_total_eur"]
-        # Solo seleccionar columnas que realmente existen en Silver
-        eco_cols_existing = [c for c in eco_cols if c in eco.columns]
-        fk = fk.join(eco.select(eco_cols_existing), on=["city_sk", "year"], how="left")
-    else:
-        fk = (fk
-              .withColumn("gdp_pps_per_capita",  F.lit(None).cast(DoubleType()))
-              .withColumn("gdp_eur_per_capita",  F.lit(None).cast(DoubleType()))
-              .withColumn("ln_gdp_pps",          F.lit(None).cast(DoubleType()))
-              .withColumn("ln_gdp_pps_sq",       F.lit(None).cast(DoubleType()))
-              .withColumn("gdp_growth_rate",     F.lit(None).cast(DoubleType()))
-              .withColumn("fua_population",      F.lit(None).cast(LongType()))
-              .withColumn("co2_country_kt",      F.lit(None).cast(DoubleType()))
-              .withColumn("eps_index",           F.lit(None).cast(DoubleType()))
-              .withColumn("env_tax_usd",         F.lit(None).cast(DoubleType()))
-              .withColumn("env_expenditure",     F.lit(None).cast(DoubleType()))
-              .withColumn("ghg_total_kt",        F.lit(None).cast(DoubleType()))
-              .withColumn("investeu_ops_count",  F.lit(None).cast(IntegerType()))
-              .withColumn("investeu_total_eur",  F.lit(None).cast(DoubleType())))
-
-    # --- Unir financiero: agregar mensual → anual por país × año ---
-    # monthly_volatility = std_diaria * sqrt(21); anualizar: avg_mensual * sqrt(12)
-    if fin is not None:
-        fin_agg = (
-            fin
-            .groupBy("country_code", "year")
-            .agg(
-                F.collect_list("close_price_avg").alias("fin_prices_raw"),
-                F.avg("close_price_avg").alias("fin_close_price_avg"),
-                # Anualización estándar: volatilidad mensual × sqrt(12)
-                (F.avg("monthly_volatility") * F.lit(3.4641)).alias("fin_annual_volatility"),
-            )
-        )
-        # Unir por country_code y year
-        fk = fk.join(
-            fin_agg,
-            on=[fk["country_code"] == fin_agg["country_code"], fk["year"] == fin_agg["year"]],
-            how="left"
-        ).drop(fin_agg["country_code"]).drop(fin_agg["year"]).drop("fin_prices_raw")
-    else:
-        fk = (fk
-              .withColumn("fin_close_price_avg",   F.lit(None).cast(DoubleType()))
-              .withColumn("fin_annual_volatility", F.lit(None).cast(DoubleType())))
-
-    # Unir tickers por país-año desde Bronze finance (JSON array)
-    try:
-        bronze_fin = spark.read.parquet("hdfs:///user/gtp/bronze/finance_raw")
-        tickers_agg = (
-            bronze_fin
-            .groupBy("fua_country_code", "year")
-            .agg(
-                F.to_json(F.collect_set("ticker")).alias("fin_tickers"),
-                F.to_json(F.collect_set("company_name")).alias("fin_companies"),
-            )
-        )
-        fk = fk.join(
-            tickers_agg,
-            on=[fk["country_code"] == tickers_agg["fua_country_code"], fk["year"] == tickers_agg["year"]],
-            how="left"
-        ).drop(tickers_agg["fua_country_code"]).drop(tickers_agg["year"])
+        f = float(v)
+        return None if not math.isfinite(f) else f
     except Exception:
-        fk = (fk
-              .withColumn("fin_tickers",   F.lit(None).cast(StringType()))
-              .withColumn("fin_companies", F.lit(None).cast(StringType())))
+        return None
 
-    # --- Columnas de modelos ML (placeholders hasta que corran los modelos) ---
-    fk = (fk
-          .withColumn("cluster_id",               F.lit(None).cast(IntegerType()))
-          .withColumn("cluster_label",             F.lit(None).cast(StringType()))
-          .withColumn("cluster_silhouette",        F.lit(None).cast(DoubleType()))
-          .withColumn("distance_to_centroid",      F.lit(None).cast(DoubleType()))
-          .withColumn("ekc_beta1",                 F.lit(None).cast(DoubleType()))
-          .withColumn("ekc_beta2",                 F.lit(None).cast(DoubleType()))
-          .withColumn("ekc_alpha",                 F.lit(None).cast(DoubleType()))
-          .withColumn("ekc_turning_point_y",       F.lit(None).cast(DoubleType()))
-          .withColumn("ekc_r_squared",             F.lit(None).cast(DoubleType()))
-          .withColumn("ekc_p_value_beta1",         F.lit(None).cast(DoubleType()))
-          .withColumn("ekc_p_value_beta2",         F.lit(None).cast(DoubleType()))
-          .withColumn("ekc_shape",                 F.lit("PENDING").cast(StringType()))
-          .withColumn("turning_point_phase",       F.lit("PENDING").cast(StringType()))
-          .withColumn("phase_confidence",          F.lit(None).cast(DoubleType()))
-          .withColumn("gdp_gap_to_turning",        F.lit(None).cast(DoubleType()))
-          .withColumn("prophet_ndvi_forecast_1y",  F.lit(None).cast(DoubleType()))
-          .withColumn("prophet_ndvi_forecast_3y",  F.lit(None).cast(DoubleType()))
-          .withColumn("prophet_ndvi_forecast_5y",  F.lit(None).cast(DoubleType()))
-          .withColumn("prophet_turning_year",      F.lit(None).cast(IntegerType()))
-          .withColumn("prophet_forecast_lower_95", F.lit(None).cast(DoubleType()))
-          .withColumn("prophet_forecast_upper_95", F.lit(None).cast(DoubleType()))
-          )
 
-    # --- Investment Score provisional (basado solo en green_index hasta tener modelos) ---
-    # Formula provisional: score = green_index * 100
-    # Se refinará en gold_build.py tras ejecutar los modelos ML.
-    fk = fk.withColumn(
-        "investment_score",
-        F.round(F.coalesce(F.col("green_index"), F.lit(0.0)) * 100.0, 2)
-    )
-    fk = fk.withColumn(
-        "investment_recommendation",
-        F.when(F.col("investment_score") >= 70, "BUY")
-         .when(F.col("investment_score") >= 50, "HOLD")
-         .otherwise("AVOID")
-    )
+def safe_int(v):
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except Exception:
+        return None
 
-    # Porcentaje de suelo natural (árbol + matorral + pradera + agua) — derivado de WorldCover
-    # Solo se calcula cuando hay datos WorldCover (2020 y 2021); NULL en otros años
-    if "wc_tree_pct" in fk.columns:
-        fk = fk.withColumn(
-            "wc_natural_pct",
-            F.when(
-                F.col("wc_tree_pct").isNotNull(),
-                F.col("wc_tree_pct")
-                + F.coalesce(F.col("wc_shrub_pct"), F.lit(0.0))
-                + F.coalesce(F.col("wc_grass_pct"), F.lit(0.0))
-                + F.coalesce(F.col("wc_water_pct"), F.lit(0.0))
-            ).otherwise(F.lit(None).cast(DoubleType()))
-        )
+
+def safe_str(v, max_len=None):
+    if v is None:
+        return None
+    # pandas NaN / numpy.nan are floats — avoid returning the string 'nan'
+    if isinstance(v, float) and not math.isfinite(v):
+        return None
+    s = str(v)
+    return s[:max_len] if max_len else s
+
+
+def read_silver(pool, query: str):
+    """Ejecuta una SELECT en MariaDB y devuelve lista de dicts."""
+    try:
+        return pool.execute_query(query)
+    except Exception as e:
+        print(f"  [WARN] Error leyendo Silver: {e}")
+        return []
+
+
+# ==============================================================================
+# TABLA 1: FACT_KUZNETS
+# PK: (city_sk, year, month)  — granularidad MENSUAL (DW schema)
+# cluster_sk: NOT NULL → placeholder 0
+# ==============================================================================
+def build_fact_kuznets(pool):
+    print("\n[GOLD 1/3] Construyendo fact_kuznets ...")
+
+    import pandas as pd
+
+    # ------------------------------------------------------------------
+    # 1. FACT_ENVIRONMENTAL — base de datos mensual por ciudad
+    # ------------------------------------------------------------------
+    env_rows = read_silver(pool, """
+        SELECT city_sk, year, month, date_sk,
+               ndvi_mean, ndvi_yoy_change,
+               no2_mean, imperviousness_mean, green_index,
+               temp_mean_c
+        FROM fact_environmental
+    """)
+
+    if not env_rows:
+        print("  [ERROR] fact_environmental vacía. Abortando fact_kuznets.")
+        return False
+
+    env_df = pd.DataFrame(env_rows)
+    env_df["year"]  = env_df["year"].astype(int)
+    env_df["month"] = env_df["month"].astype(int)
+
+    # ------------------------------------------------------------------
+    # ndvi_trend_slope — OLS slope de ndvi_mean vs year por ciudad
+    # Se calcula sobre todo el histórico y se replica a todos los meses.
+    # ------------------------------------------------------------------
+    slopes = {}
+    for city_sk, grp in env_df.groupby("city_sk"):
+        grp_valid = grp.dropna(subset=["ndvi_mean"]).sort_values("year")
+        if len(grp_valid) >= 2:
+            x = grp_valid["year"].values.astype(float)
+            y = grp_valid["ndvi_mean"].values.astype(float)
+            n = len(x)
+            sx  = x.sum()
+            sy  = y.sum()
+            sxy = (x * y).sum()
+            sx2 = (x ** 2).sum()
+            denom = n * sx2 - sx ** 2
+            slopes[city_sk] = (n * sxy - sx * sy) / denom if denom != 0 else None
+    env_df["ndvi_trend_slope"] = env_df["city_sk"].map(slopes)
+
+    # ------------------------------------------------------------------
+    # 2. DIM_CITY — metadatos de ciudad
+    # ------------------------------------------------------------------
+    city_rows = read_silver(pool, """
+        SELECT city_sk, city_code, city_name, country_code, country_name
+        FROM dim_city
+    """)
+    if not city_rows:
+        print("  [ERROR] dim_city vacía.")
+        return False
+    city_df = pd.DataFrame(city_rows)
+
+    # ------------------------------------------------------------------
+    # 3. FACT_ECONOMIC — GDP mensual por ciudad (LEFT JOIN)
+    # ------------------------------------------------------------------
+    eco_rows = read_silver(pool, """
+        SELECT city_sk, year, month,
+               gdp_pps_per_capita, ln_gdp_pps, ln_gdp_pps_sq,
+               gdp_growth_rate, fua_population
+        FROM fact_economic
+    """)
+    eco_df = pd.DataFrame(eco_rows) if eco_rows else pd.DataFrame()
+    if not eco_df.empty:
+        eco_df["year"]  = eco_df["year"].astype(int)
+        eco_df["month"] = eco_df["month"].astype(int)
+
+    # ------------------------------------------------------------------
+    # 4. FACT_POLICY — indicadores de política ambiental por país/mes
+    # Incluye co2_country_kt, eps_index, env_tax_usd, investeu_total_eur
+    # ------------------------------------------------------------------
+    policy_rows = read_silver(pool, """
+        SELECT country_code, year, month,
+               co2_country_kt,
+               eps_index, env_tax_usd,
+               investeu_total_eur
+        FROM fact_policy
+    """)
+    policy_df = pd.DataFrame(policy_rows) if policy_rows else pd.DataFrame()
+    if not policy_df.empty:
+        policy_df["year"]  = policy_df["year"].astype(int)
+        policy_df["month"] = policy_df["month"].astype(int)
+
+    # ------------------------------------------------------------------
+    # 5. FACT_FINANCIAL — agregado por país/año/mes
+    # ------------------------------------------------------------------
+    fin_rows = read_silver(pool, """
+        SELECT dc.country_code,
+               ff.year,
+               ff.month,
+               GROUP_CONCAT(DISTINCT dc.ticker
+                            ORDER BY dc.ticker SEPARATOR ',') AS fin_tickers,
+               AVG(ff.close_price)                            AS fin_close_price_avg,
+               AVG(ff.monthly_volatility)                     AS fin_annual_volatility
+        FROM fact_financial ff
+        JOIN dim_company dc
+             ON ff.company_sk = dc.company_sk AND dc.is_current = 1
+        GROUP BY dc.country_code, ff.year, ff.month
+    """)
+    fin_df = pd.DataFrame(fin_rows) if fin_rows else pd.DataFrame()
+    if not fin_df.empty:
+        fin_df["year"]  = fin_df["year"].astype(int)
+        fin_df["month"] = fin_df["month"].astype(int)
+
+    # ------------------------------------------------------------------
+    # MERGE
+    # ------------------------------------------------------------------
+    fk = env_df.merge(city_df, on="city_sk", how="left")
+
+    if not eco_df.empty:
+        fk = fk.merge(eco_df, on=["city_sk", "year", "month"], how="left")
     else:
-        fk = fk.withColumn("wc_natural_pct", F.lit(None).cast(DoubleType()))
+        for col in ["gdp_pps_per_capita", "ln_gdp_pps", "ln_gdp_pps_sq",
+                    "gdp_growth_rate", "fua_population"]:
+            fk[col] = None
 
-    fk = fk.withColumn("_gold_load_date", F.lit(GOLD_LOAD_DATE))
+    if not policy_df.empty and "country_code" in fk.columns:
+        fk = fk.merge(policy_df, on=["country_code", "year", "month"], how="left")
+    else:
+        for col in ["co2_country_kt", "eps_index", "env_tax_usd", "investeu_total_eur"]:
+            fk[col] = None
 
-    # Renombrar columnas ambientales para alinear con el DDL de Gold
-    rename_map = {
-        "ndvi_annual_mean":    "ndvi_mean",
-        "ndvi_trend_slope":    "ndvi_trend_slope",
-        "no2_annual_mean":     "no2_mean",
-    }
-    for old, new in rename_map.items():
-        if old in fk.columns and old != new:
-            fk = fk.withColumnRenamed(old, new)
+    if not fin_df.empty and "country_code" in fk.columns:
+        fk = fk.merge(fin_df, on=["country_code", "year", "month"], how="left")
+    else:
+        for col in ["fin_tickers", "fin_close_price_avg", "fin_annual_volatility"]:
+            fk[col] = None
 
-    # Asegurar columna country para partición
-    if "country" not in fk.columns:
-        fk = fk.withColumn("country", F.col("country_code"))
-
-    write_gold(fk, "fact_kuznets", ["year", "country"])
-    repair_table(spark, "fact_kuznets")
-    return fk
-
-
-# ==============================================================================
-# TABLA 2: CITY_RANKING — Ranking europeo por año
-# ==============================================================================
-def build_city_ranking(spark, fact_kuznets=None):
-    print("\n[GOLD 2/4] Construyendo city_ranking ...")
-
-    if fact_kuznets is None:
-        fact_kuznets = spark.read.parquet(f"{HDFS_GOLD}/fact_kuznets")
-
-    # Ranking dentro del año (global y por país)
-    w_global  = Window.partitionBy("year").orderBy(F.desc("investment_score"))
-    w_country = Window.partitionBy("year", "country_code").orderBy(F.desc("investment_score"))
-
-    ranking = (
-        fact_kuznets
-        .withColumn("rank_position",         F.rank().over(w_global))
-        .withColumn("rank_within_country",   F.rank().over(w_country))
+    # ------------------------------------------------------------------
+    # Columnas de negocio
+    # ------------------------------------------------------------------
+    fk["investment_score"] = (fk["green_index"].fillna(0.0) * 100.0).round(2)
+    fk["investment_recommendation"] = fk["investment_score"].apply(
+        lambda s: (
+            "STRONG_BUY" if s >= 75
+            else ("BUY" if s >= 55
+                  else ("HOLD" if s >= 35
+                        else "AVOID"))
+        )
     )
 
-    # Cambio de ranking YoY
-    w_city_time = Window.partitionBy("city_code").orderBy("year")
-    ranking = (
-        ranking
-        .withColumn("rank_change",  F.col("rank_position")   - F.lag("rank_position").over(w_city_time))
-        .withColumn("score_change", F.col("investment_score") - F.lag("investment_score").over(w_city_time))
-    )
+    print(f"  fact_kuznets preparado: {len(fk):,} filas (ciudad × año × mes)")
 
-    # Top ticker del país (primer ticker de la lista JSON — simplificación)
-    ranking = (
-        ranking
-        .withColumn("top_ticker",  F.get_json_object(F.col("fin_tickers"),  "$[0]"))
-        .withColumn("top_company", F.get_json_object(F.col("fin_companies"), "$[0]"))
-    )
+    # ------------------------------------------------------------------
+    # INSERT — columnas exactas del DW DDL (mariadb_dw_ddl.sql)
+    # PK: (city_sk, year, month)
+    # cluster_sk NOT NULL → placeholder CLUSTER_SK_DEFAULT
+    # ------------------------------------------------------------------
+    sql = """
+        INSERT INTO fact_kuznets
+            (city_sk, cluster_sk, date_sk, year, month,
+             city_code, city_name, country_code, country_name,
+             ndvi_mean, ndvi_trend_slope, ndvi_yoy_change,
+             no2_mean, imperviousness_mean, green_index,
+             temp_mean_c, co2_country_kt,
+             gdp_pps_per_capita, ln_gdp_pps, ln_gdp_pps_sq,
+             gdp_growth_rate, fua_population,
+             cluster_id, cluster_label, cluster_silhouette, distance_to_centroid,
+             ekc_beta1, ekc_beta2, ekc_alpha,
+             ekc_turning_point_y, ekc_r_squared, ekc_shape,
+             turning_point_phase, phase_confidence, gdp_gap_to_turning,
+             prophet_ndvi_forecast_1y, prophet_ndvi_forecast_3y, prophet_ndvi_forecast_5y,
+             prophet_turning_year, prophet_forecast_lower_95, prophet_forecast_upper_95,
+             eps_index, env_tax_usd, investeu_total_eur,
+             fin_tickers, fin_close_price_avg, fin_annual_volatility,
+             investment_score, investment_recommendation,
+             _gold_load_date)
+        VALUES (
+            %s,%s,%s,%s,%s,
+            %s,%s,%s,%s,
+            %s,%s,%s,
+            %s,%s,%s,
+            %s,%s,
+            %s,%s,%s,
+            %s,%s,
+            %s,%s,%s,%s,
+            %s,%s,%s,
+            %s,%s,%s,
+            %s,%s,%s,
+            %s,%s,%s,
+            %s,%s,%s,
+            %s,%s,%s,
+            %s,%s,%s,
+            %s,%s,
+            %s
+        )
+        ON DUPLICATE KEY UPDATE
+            city_code=VALUES(city_code),
+            ndvi_mean=VALUES(ndvi_mean),
+            ndvi_trend_slope=VALUES(ndvi_trend_slope),
+            ndvi_yoy_change=VALUES(ndvi_yoy_change),
+            no2_mean=VALUES(no2_mean),
+            green_index=VALUES(green_index),
+            temp_mean_c=VALUES(temp_mean_c),
+            co2_country_kt=VALUES(co2_country_kt),
+            gdp_pps_per_capita=VALUES(gdp_pps_per_capita),
+            ln_gdp_pps=VALUES(ln_gdp_pps),
+            ln_gdp_pps_sq=VALUES(ln_gdp_pps_sq),
+            eps_index=VALUES(eps_index),
+            investeu_total_eur=VALUES(investeu_total_eur),
+            investment_score=VALUES(investment_score),
+            investment_recommendation=VALUES(investment_recommendation),
+            _gold_load_date=VALUES(_gold_load_date)
+    """
 
-    final = ranking.select(
-        "rank_position", "rank_within_country",
-        "city_code", "city_name", "country_code", "country_name",
-        "investment_score", "investment_recommendation",
-        "green_index", "turning_point_phase",
-        "prophet_turning_year",
-        "rank_change", "score_change",
-        "top_ticker", "top_company",
-        F.lit(GOLD_LOAD_DATE).alias("_gold_load_date"),
-        "year"
-    )
+    rows = []
+    for _, row in fk.iterrows():
+        city_sk = safe_int(row.get("city_sk"))
+        if city_sk is None:
+            continue
+        rows.append((
+            # PK + required
+            city_sk,
+            CLUSTER_SK_DEFAULT,
+            safe_int(row.get("date_sk")),
+            safe_int(row.get("year")),
+            safe_int(row.get("month")),
+            # city metadata
+            safe_str(row.get("city_code")),
+            safe_str(row.get("city_name")),
+            safe_str(row.get("country_code")),
+            safe_str(row.get("country_name")),
+            # environmental
+            safe_float(row.get("ndvi_mean")),
+            safe_float(row.get("ndvi_trend_slope")),
+            safe_float(row.get("ndvi_yoy_change")),
+            safe_float(row.get("no2_mean")),
+            safe_float(row.get("imperviousness_mean")),
+            safe_float(row.get("green_index")),
+            safe_float(row.get("temp_mean_c")),
+            safe_float(row.get("co2_country_kt")),
+            # economic
+            safe_float(row.get("gdp_pps_per_capita")),
+            safe_float(row.get("ln_gdp_pps")),
+            safe_float(row.get("ln_gdp_pps_sq")),
+            safe_float(row.get("gdp_growth_rate")),
+            safe_int(row.get("fua_population")),
+            # clustering placeholders (NULL until models run)
+            None, None, None, None,
+            # EKC placeholders
+            None, None, None,
+            None, None, "PENDING",
+            # XGBoost placeholders
+            "PENDING", None, None,
+            # Prophet placeholders
+            None, None, None,
+            None, None, None,
+            # policy
+            safe_float(row.get("eps_index")),
+            safe_float(row.get("env_tax_usd")),
+            safe_float(row.get("investeu_total_eur")),
+            # financial
+            safe_str(row.get("fin_tickers")),
+            safe_float(row.get("fin_close_price_avg")),
+            safe_float(row.get("fin_annual_volatility")),
+            # score
+            safe_float(row.get("investment_score")),
+            safe_str(row.get("investment_recommendation", "AVOID")),
+            GOLD_LOAD_DATE,
+        ))
 
-    write_gold(final, "city_ranking", ["year"])
-    repair_table(spark, "city_ranking")
+    batch_upsert(pool, sql, rows)
+    print(f"  [GOLD] fact_kuznets: {len(rows)} filas escritas en MariaDB")
+    return True
 
 
 # ==============================================================================
-# TABLA 3: EKC_PARAMETERS — Placeholder (se rellena con ekc_regression.py)
+# TABLA 2: CITY_RANKING
+# PK: (city_sk, year, month)  — rank_change MoM (vs mes anterior)
 # ==============================================================================
-def build_ekc_parameters_placeholder(spark):
-    print("\n[GOLD 3/4] Creando ekc_parameters (placeholder — se rellenará tras modelos ML) ...")
+def build_city_ranking(pool):
+    print("\n[GOLD 2/3] Construyendo city_ranking ...")
 
-    schema = StructType([
-        StructField("cluster_id",               IntegerType(), True),
-        StructField("cluster_label",            StringType(),  True),
-        StructField("estimation_year",          IntegerType(), True),
-        StructField("n_cities",                 IntegerType(), True),
-        StructField("n_observations",           IntegerType(), True),
-        StructField("city_codes",               StringType(),  True),
-        StructField("countries_represented",    StringType(),  True),
-        StructField("gdp_pps_mean",             DoubleType(),  True),
-        StructField("gdp_pps_std",              DoubleType(),  True),
-        StructField("ndvi_mean",                DoubleType(),  True),
-        StructField("alpha",                    DoubleType(),  True),
-        StructField("beta1",                    DoubleType(),  True),
-        StructField("beta2",                    DoubleType(),  True),
-        StructField("beta1_se",                 DoubleType(),  True),
-        StructField("beta2_se",                 DoubleType(),  True),
-        StructField("beta1_pvalue",             DoubleType(),  True),
-        StructField("beta2_pvalue",             DoubleType(),  True),
-        StructField("turning_point_y_star",     DoubleType(),  True),
-        StructField("turning_point_ln_y",       DoubleType(),  True),
-        StructField("r_squared",                DoubleType(),  True),
-        StructField("r_squared_adj",            DoubleType(),  True),
-        StructField("f_statistic",              DoubleType(),  True),
-        StructField("f_pvalue",                 DoubleType(),  True),
-        StructField("aic",                      DoubleType(),  True),
-        StructField("bic",                      DoubleType(),  True),
-        StructField("ekc_hypothesis_supported", BooleanType(), True),
-        StructField("ekc_shape",                StringType(),  True),
-        StructField("_estimation_timestamp",    StringType(),  True),
-        StructField("_model_version",           StringType(),  True),
-    ])
+    import pandas as pd
 
-    # DataFrame vacío — se rellenará tras ejecutar ekc_regression.py
-    df = spark.createDataFrame([], schema)
-    df.write.mode("overwrite").parquet(f"{HDFS_GOLD}/ekc_parameters")
-    print(f"  [GOLD] ekc_parameters: placeholder vacío creado (pendiente modelos ML)")
-    repair_table(spark, "ekc_parameters")
+    fk_rows = read_silver(pool, """
+        SELECT fk.city_sk, fk.date_sk, fk.year, fk.month,
+               fk.city_code, fk.city_name, fk.country_code, fk.country_name,
+               fk.investment_score, fk.investment_recommendation,
+               fk.green_index, fk.turning_point_phase, fk.prophet_turning_year,
+               fk.fin_tickers
+        FROM fact_kuznets fk
+        ORDER BY fk.year, fk.month, fk.investment_score DESC
+    """)
 
+    if not fk_rows:
+        print("  [SKIP] fact_kuznets vacía.")
+        return
 
-# ==============================================================================
-# TABLA 4: MODEL_RESULTS — Placeholder (se rellena con los scripts de modelos)
-# ==============================================================================
-def build_model_results_placeholder(spark):
-    print("\n[GOLD 4/4] Creando model_results (placeholder — se rellenará tras modelos ML) ...")
+    df = pd.DataFrame(fk_rows)
+    df["year"]  = df["year"].astype(int)
+    df["month"] = df["month"].astype(int)
 
-    schema = StructType([
-        StructField("city_code",                StringType(),  True),
-        StructField("city_name",                StringType(),  True),
-        StructField("country_code",             StringType(),  True),
-        StructField("kmeans_cluster_id",        IntegerType(), True),
-        StructField("kmeans_cluster_label",     StringType(),  True),
-        StructField("kmeans_silhouette",        DoubleType(),  True),
-        StructField("kmeans_distance_centroid", DoubleType(),  True),
-        StructField("kmeans_k_selected",        IntegerType(), True),
-        StructField("ekc_cluster_id",           IntegerType(), True),
-        StructField("ekc_fitted_ndvi",          DoubleType(),  True),
-        StructField("ekc_residual",             DoubleType(),  True),
-        StructField("ekc_turning_point_y",      DoubleType(),  True),
-        StructField("ekc_distance_to_turning",  DoubleType(),  True),
-        StructField("xgb_predicted_phase",      StringType(),  True),
-        StructField("xgb_prob_degradando",      DoubleType(),  True),
-        StructField("xgb_prob_turning",         DoubleType(),  True),
-        StructField("xgb_prob_recuperando",     DoubleType(),  True),
-        StructField("xgb_confidence",           DoubleType(),  True),
-        StructField("xgb_feature_importance",   StringType(),  True),
-        StructField("prophet_ndvi_actual",      DoubleType(),  True),
-        StructField("prophet_ndvi_fitted",      DoubleType(),  True),
-        StructField("prophet_trend",            DoubleType(),  True),
-        StructField("prophet_seasonality",      DoubleType(),  True),
-        StructField("prophet_forecast_1y",      DoubleType(),  True),
-        StructField("prophet_forecast_3y",      DoubleType(),  True),
-        StructField("prophet_forecast_5y",      DoubleType(),  True),
-        StructField("prophet_lower_95_5y",      DoubleType(),  True),
-        StructField("prophet_upper_95_5y",      DoubleType(),  True),
-        StructField("prophet_turning_year",     IntegerType(), True),
-        StructField("prophet_mape",             DoubleType(),  True),
-        StructField("_model_run_date",          StringType(),  True),
-        StructField("_pipeline_version",        StringType(),  True),
-        StructField("year",                     IntegerType(), True),
-        StructField("country",                  StringType(),  True),
-    ])
-
-    df = spark.createDataFrame([], schema)
-    (
-        df.write
-        .mode("overwrite")
-        .partitionBy("year", "country")
-        .parquet(f"{HDFS_GOLD}/model_results")
+    # Rank global dentro de cada (year, month)
+    df = df.sort_values(["year", "month", "investment_score"], ascending=[True, True, False])
+    df["rank_position"] = (
+        df.groupby(["year", "month"])["investment_score"]
+        .rank(method="min", ascending=False)
+        .astype(int)
     )
-    print(f"  [GOLD] model_results: placeholder vacío creado (pendiente modelos ML)")
-    repair_table(spark, "model_results")
+
+    # Rank dentro del país
+    df["rank_within_country"] = (
+        df.groupby(["year", "month", "country_code"])["investment_score"]
+        .rank(method="min", ascending=False)
+        .astype(int)
+    )
+
+    # rank_change MoM (positivo = mejora = rank_position bajó)
+    df = df.sort_values(["city_sk", "year", "month"])
+    df["rank_change"] = (
+        df.groupby("city_sk")["rank_position"]
+        .diff()
+        .apply(lambda x: -int(x) if x == x else None)
+    )
+    df["score_change"] = (
+        df.groupby("city_sk")["investment_score"]
+        .diff()
+        .apply(safe_float)
+    )
+
+    # top_ticker / top_company (primer elemento de la lista CSV)
+    def _first(s, max_len):
+        if s and isinstance(s, str):
+            return s.split(",")[0].strip()[:max_len]
+        return None
+
+    df["top_ticker"]  = df["fin_tickers"].apply(lambda s: _first(s, 20))
+    df["top_company"] = df.get("fin_companies", pd.Series(None, index=df.index))
+
+    sql = """
+        INSERT INTO city_ranking
+            (city_sk, date_sk, year, month,
+             rank_position, rank_within_country,
+             city_code, city_name, country_code, country_name,
+             investment_score, investment_recommendation,
+             green_index, turning_point_phase,
+             prophet_turning_year,
+             rank_change, score_change,
+             top_ticker, top_company,
+             _gold_load_date)
+        VALUES (%s,%s,%s,%s, %s,%s, %s,%s,%s,%s, %s,%s, %s,%s, %s, %s,%s, %s,%s, %s)
+        ON DUPLICATE KEY UPDATE
+            rank_position=VALUES(rank_position),
+            rank_within_country=VALUES(rank_within_country),
+            investment_score=VALUES(investment_score),
+            investment_recommendation=VALUES(investment_recommendation),
+            rank_change=VALUES(rank_change),
+            score_change=VALUES(score_change),
+            _gold_load_date=VALUES(_gold_load_date)
+    """
+
+    rows = []
+    for _, row in df.iterrows():
+        city_sk = safe_int(row["city_sk"])
+        if city_sk is None:
+            continue
+        rc = row.get("rank_change")
+        rows.append((
+            city_sk,
+            safe_int(row["date_sk"]),
+            safe_int(row["year"]),
+            safe_int(row["month"]),
+            safe_int(row["rank_position"]),
+            safe_int(row["rank_within_country"]),
+            safe_str(row["city_code"]),
+            safe_str(row.get("city_name")),
+            safe_str(row.get("country_code")),
+            safe_str(row.get("country_name")),
+            safe_float(row["investment_score"]),
+            safe_str(row.get("investment_recommendation", "AVOID")),
+            safe_float(row.get("green_index")),
+            safe_str(row.get("turning_point_phase", "PENDING")),
+            safe_int(row.get("prophet_turning_year")),
+            safe_int(rc) if (rc is not None and rc == rc) else None,
+            safe_float(row.get("score_change")),
+            safe_str(row.get("top_ticker"), 20),
+            safe_str(row.get("top_company"), 255),
+            GOLD_LOAD_DATE,
+        ))
+
+    batch_upsert(pool, sql, rows)
+    print(f"  [GOLD] city_ranking: {len(rows)} filas escritas en MariaDB")
+
+
+# ==============================================================================
+# TABLA 3: MODEL_RESULTS — placeholder vacío (lo llenan los modelos ML)
+# ==============================================================================
+def build_model_results_placeholder(pool):
+    print("\n[GOLD 3/3] model_results: placeholder (vacía hasta que corran los modelos ML)")
+    pass
 
 
 # ==============================================================================
 # MAIN
 # ==============================================================================
 def main():
-    parser = argparse.ArgumentParser(description="GTP Gold Build")
+    parser = argparse.ArgumentParser(description="GTP Gold Build → MariaDB")
     parser.add_argument("--table", default="all",
-                        choices=["all", "fact_kuznets", "city_ranking", "ekc_parameters", "model_results"],
-                        help="Tabla específica a construir (default: all)")
+                        choices=["all", "fact_kuznets", "city_ranking", "model_results"],
+                        help="Tabla a construir (default: all)")
     args = parser.parse_args()
 
     print("=" * 65)
-    print("  GTP — GOLD BUILD")
+    print("  GTP — GOLD BUILD (MariaDB DW schema — monthly)")
     print(f"  Inicio: {GOLD_LOAD_DATE}")
-    print(f"  Silver: {HDFS_SILVER}")
-    print(f"  Gold:   {HDFS_GOLD}")
+    print(f"  Fuente: MariaDB Silver (fact_environmental, fact_economic, fact_policy, fact_financial)")
     print("=" * 65)
 
-    spark = get_spark()
-    spark.sql("CREATE DATABASE IF NOT EXISTS gtp_gold LOCATION 'hdfs:///user/gtp/gold'")
+    pool = get_pool()
 
-    fk = None
-
+    ok = True
     if args.table in ("all", "fact_kuznets"):
-        fk = build_fact_kuznets(spark)
+        ok = build_fact_kuznets(pool)
 
-    if args.table in ("all", "city_ranking"):
-        build_city_ranking(spark, fk)
-
-    if args.table in ("all", "ekc_parameters"):
-        build_ekc_parameters_placeholder(spark)
+    if ok and args.table in ("all", "city_ranking"):
+        build_city_ranking(pool)
 
     if args.table in ("all", "model_results"):
-        build_model_results_placeholder(spark)
+        build_model_results_placeholder(pool)
 
     print("\n" + "=" * 65)
-    print("  GOLD BUILD COMPLETADO")
+    print("  GOLD BUILD COMPLETADO → MariaDB")
     print("=" * 65)
-    spark.stop()
 
 
 if __name__ == "__main__":

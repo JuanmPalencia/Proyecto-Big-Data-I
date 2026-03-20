@@ -1,202 +1,182 @@
 """
 clustering.py — GTP (Green Turning Point) | Modelo 1: K-Means Clustering
-Segmenta las ciudades europeas en grupos homogéneos antes de la regresión EKC.
+Segmenta ciudades europeas en grupos homogeneos antes de la regresion EKC.
 
-Por qué clustering primero:
-  Las ciudades de Europa tienen perfiles muy distintos (Noruega vs Rumanía).
-  Hacer una sola regresión EKC para todas mezclaría dinámicas incompatibles.
-  Agrupando primero, cada cluster tiene ciudades con patrones similares y
-  la regresión posterior tiene más sentido estadístico.
+Lee Silver desde MariaDB (fact_environmental + fact_economic).
+Usa sklearn KMeans (datos pequenos: ~237 ciudades).
+Escribe resultados en MariaDB:
+  - fact_kuznets: cluster_id, cluster_label, cluster_silhouette
+  - model_results: columnas K-Means
+  - dim_cluster: entrada SCD-2 con parametros del clustering
 
-Algoritmo:
-  - K-Means PySpark MLlib (escalable a 237+ ciudades × 8+ años)
-  - Selección automática de K por índice Silhouette (rango K=2..8)
-  - Features: ndvi_annual_mean, ndvi_trend_slope, no2_annual_mean,
-              imperviousness_mean, ln_gdp_pps (del año más reciente disponible)
-  - Normalización: StandardScaler antes de K-Means
-
-Output:
-  - Actualiza fact_kuznets en Gold con cluster_id, cluster_label, silhouette
-  - Guarda modelo serializado en HDFS para reutilización
-
-Ejecución:
-  spark-submit --master yarn models/clustering.py [--k-min 2] [--k-max 8]
+Ejecucion:
+  python models/clustering.py [--k-min 2] [--k-max 8]
 """
 
 import sys
-import argparse
 import json
-from pathlib import Path
+import argparse
+import warnings
+import numpy as np
 from datetime import datetime, timezone
+from pathlib import Path
 
-from pyspark.sql import SparkSession, Window
-from pyspark.sql import functions as F
-from pyspark.sql.types import IntegerType, DoubleType, StringType
-
-from pyspark.ml.feature import VectorAssembler, StandardScaler
-from pyspark.ml.clustering import KMeans
-from pyspark.ml.evaluation import ClusteringEvaluator
+warnings.filterwarnings("ignore")
 
 # ==============================================================================
-# CONFIGURACIÓN
+# CONFIGURACION
 # ==============================================================================
-HDFS_SILVER  = "hdfs:///user/gtp/silver"
-HDFS_GOLD    = "hdfs:///user/gtp/gold"
-HDFS_MODELS  = "hdfs:///user/gtp/models/clustering"
+CONFIG_FILE   = str(Path(__file__).resolve().parent.parent.parent / "config.ini")
+MODEL_VERSION = "1.0"
+MODEL_RUN_DATE = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+MODEL_TS       = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-MODEL_VERSION   = "1.0"
-MODEL_RUN_DATE  = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-# Features para clustering (todas numéricas, escaladas)
 CLUSTER_FEATURES = [
-    "ndvi_mean_city",          # NDVI medio histórico de la ciudad
-    "ndvi_slope_city",         # Tendencia NDVI (positivo = ciudad reverdeciendo)
-    "no2_mean_city",           # NO2 medio histórico
-    "imperviousness_city",     # Impermeabilización media
-    "ln_gdp_mean_city",        # ln(GDP per cápita) medio
-    "gdp_growth_mean_city",    # Crecimiento económico medio
+    "ndvi_mean_city",
+    "ndvi_yoy_change_city",
+    "no2_mean_city",
+    "imperviousness_mean_city",
+    "ln_gdp_mean_city",
+    "gdp_growth_mean_city",
 ]
 
-# Etiquetas interpretables por cluster (asignadas post-hoc según los centroides)
-# Serán sobreescritas tras inspección manual de los resultados.
-CLUSTER_LABEL_FALLBACK = "Cluster_{id}"
 
 # ==============================================================================
-# SPARK
+# DB POOL
 # ==============================================================================
-def get_spark():
-    return (
-        SparkSession.builder
-        .appName("GTP_Clustering")
-        .config("spark.sql.shuffle.partitions", "50")
-        .config("spark.sql.parquet.compression.codec", "snappy")
-        .config("hive.exec.dynamic.partition", "true")
-        .config("hive.exec.dynamic.partition.mode", "nonstrict")
-        .enableHiveSupport()
-        .getOrCreate()
-    )
+def get_pool():
+    bbdd_dir = str(Path(__file__).resolve().parent.parent)
+    if bbdd_dir not in sys.path:
+        sys.path.insert(0, bbdd_dir)
+    from db_pool import MariaDBPool
+    return MariaDBPool(config_file=CONFIG_FILE)
 
-# ==============================================================================
-# PREPARACIÓN DE FEATURES
-# Agregamos a nivel ciudad (promedio histórico) para capturar el perfil
-# estructural de cada ciudad, no la variación anual.
-# ==============================================================================
-def build_feature_matrix(spark):
-    print("  Cargando Silver fact_environmental y fact_economic ...")
 
+def safe_float(v):
+    if v is None:
+        return None
     try:
-        env = spark.read.parquet(f"{HDFS_SILVER}/fact_environmental")
-        eco = spark.read.parquet(f"{HDFS_SILVER}/fact_economic")
-        city = spark.read.parquet(f"{HDFS_SILVER}/dim_city")
-    except Exception as e:
-        print(f"[SKIP] Silver no disponible para clustering: {e}")
+        f = float(v)
+        return None if f != f else f
+    except Exception:
         return None
 
-    # Agregar ambiental por ciudad (promedio histórico)
-    env_agg = (
-        env
-        .groupBy("city_sk")
-        .agg(
-            F.avg("ndvi_annual_mean").alias("ndvi_mean_city"),
-            F.avg("ndvi_trend_slope").alias("ndvi_slope_city"),
-            F.avg("no2_annual_mean").alias("no2_mean_city"),
-            F.avg("imperviousness_mean").alias("imperviousness_city"),
-            F.count("*").alias("n_years_env"),
-        )
-    )
 
-    # Agregar económico por ciudad
-    eco_agg = (
-        eco
-        .groupBy("city_sk")
-        .agg(
-            F.avg("ln_gdp_pps").alias("ln_gdp_mean_city"),
-            F.avg("gdp_growth_rate").alias("gdp_growth_mean_city"),
-        )
-    )
+def safe_int(v):
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except Exception:
+        return None
 
-    # Join ciudad + ambiental + económico
-    features = (
-        city.select("city_sk", "city_code", "city_name", "country_code")
-        .join(env_agg, on="city_sk", how="left")
-        .join(eco_agg, on="city_sk", how="left")
-    )
 
-    # Rellenar nulos con mediana (KMeans no tolera NaN)
-    for col_name in CLUSTER_FEATURES:
-        if col_name in features.columns:
-            median_val = features.approxQuantile(col_name, [0.5], 0.01)[0]
-            features = features.fillna({col_name: median_val})
+# ==============================================================================
+# CARGA DE DATOS DESDE MARIADB
+# Agrega a nivel ciudad (promedio historico) para capturar perfil estructural
+# ==============================================================================
+def build_feature_matrix(pool):
+    import pandas as pd
+    print("  Cargando fact_environmental y fact_economic desde MariaDB ...")
+
+    env_rows = pool.execute_query("""
+        SELECT city_sk, AVG(ndvi_mean) AS ndvi_mean_city,
+               AVG(ndvi_yoy_change) AS ndvi_yoy_change_city,
+               AVG(no2_mean) AS no2_mean_city,
+               AVG(imperviousness_mean) AS imperviousness_mean_city
+        FROM fact_environmental
+        GROUP BY city_sk
+    """)
+
+    eco_rows = pool.execute_query("""
+        SELECT city_sk,
+               AVG(ln_gdp_pps) AS ln_gdp_mean_city,
+               AVG(gdp_growth_rate) AS gdp_growth_mean_city
+        FROM fact_economic
+        GROUP BY city_sk
+    """)
+
+    city_rows = pool.execute_query("""
+        SELECT city_sk, city_code, city_name, country_code
+        FROM dim_city
+    """)
+
+    if not env_rows:
+        print("  [SKIP] fact_environmental vacia.")
+        return None, None
+
+    env_df  = pd.DataFrame(env_rows)
+    eco_df  = pd.DataFrame(eco_rows) if eco_rows else pd.DataFrame(columns=["city_sk"])
+    city_df = pd.DataFrame(city_rows)
+
+    df = city_df.merge(env_df, on="city_sk", how="left")
+    if not eco_df.empty:
+        df = df.merge(eco_df, on="city_sk", how="left")
+    else:
+        df["ln_gdp_mean_city"]    = None
+        df["gdp_growth_mean_city"] = None
+
+    # Rellenar nulos con la mediana
+    for col in CLUSTER_FEATURES:
+        if col in df.columns:
+            median_val = df[col].median()
+            df[col] = df[col].fillna(median_val if median_val == median_val else 0.0)
         else:
-            features = features.withColumn(col_name, F.lit(0.0).cast(DoubleType()))
+            df[col] = 0.0
 
-    n = features.count()
-    print(f"  Feature matrix: {n} ciudades × {len(CLUSTER_FEATURES)} features")
-    return features
+    print(f"  Feature matrix: {len(df)} ciudades x {len(CLUSTER_FEATURES)} features")
+    return df, city_df
 
 
 # ==============================================================================
-# SELECCIÓN DE K POR SILHOUETTE
+# SELECCION DE K POR SILHOUETTE
 # ==============================================================================
-def select_best_k(df_scaled, k_min: int, k_max: int, seed: int = 42):
-    print(f"\n  Evaluando K-Means para K={k_min}..{k_max} (criterio: Silhouette) ...")
+def select_best_k(X_scaled, k_min: int, k_max: int, seed: int = 42):
+    from sklearn.cluster import KMeans
+    from sklearn.metrics import silhouette_score
 
-    evaluator = ClusteringEvaluator(
-        featuresCol="scaled_features",
-        predictionCol="cluster_id",
-        metricName="silhouette",
-        distanceMeasure="squaredEuclidean"
-    )
-
+    print(f"\n  Evaluando K-Means K={k_min}..{k_max} (Silhouette) ...")
     results = []
+
     for k in range(k_min, k_max + 1):
-        km = KMeans(
-            featuresCol="scaled_features",
-            predictionCol="cluster_id",
-            k=k,
-            seed=seed,
-            maxIter=50,
-            tol=1e-4
-        )
-        model = km.fit(df_scaled)
-        preds = model.transform(df_scaled)
-        sil   = evaluator.evaluate(preds)
-        results.append((k, sil, model))
+        km      = KMeans(n_clusters=k, random_state=seed, n_init=10, max_iter=300)
+        labels  = km.fit_predict(X_scaled)
+        if len(set(labels)) < 2:
+            print(f"    K={k:2d}  [SKIP] solo un cluster")
+            continue
+        sil = silhouette_score(X_scaled, labels, metric="euclidean")
+        results.append((k, sil, km, labels))
         print(f"    K={k:2d}  Silhouette={sil:.4f}")
 
-    # El mejor K es el que maximiza el Silhouette
+    if not results:
+        print("  [ERROR] No se pudo calcular Silhouette.")
+        return None
+
     best = max(results, key=lambda x: x[1])
-    print(f"\n  → K óptimo: K={best[0]}  (Silhouette={best[1]:.4f})")
-    return best  # (k, silhouette, model)
+    print(f"\n  Optimo: K={best[0]} (Silhouette={best[1]:.4f})")
+    return best   # (k, sil, km_model, labels)
 
 
 # ==============================================================================
-# ASIGNACIÓN DE ETIQUETAS POR CLUSTER
-# Analiza los centroides para asignar nombres interpretables.
-# Criterios:
-#   - High GDP + High NDVI slope → "High-Income-Greening"
-#   - High GDP + Low NDVI slope  → "High-Income-Stable"
-#   - Low GDP + High NO2         → "Industrializing"
-#   - Low GDP + Low NO2          → "Developing-Green"
+# ASIGNACION DE ETIQUETAS INTERPRETABLES
 # ==============================================================================
-def label_clusters(model, assembler_cols):
-    centers = model.clusterCenters()
+def label_clusters(km_model, feature_names, scaler):
+    """Asigna etiquetas semanticas a cada cluster basadas en los centroides."""
+    centers_original = scaler.inverse_transform(km_model.cluster_centers_)
+    idx = {name: i for i, name in enumerate(feature_names)}
     labels = []
 
-    # Índices de las features en el vector
-    idx = {name: i for i, name in enumerate(assembler_cols)}
+    for cluster_id, center in enumerate(centers_original):
+        ndvi_yoy = center[idx.get("ndvi_yoy_change_city", 0)]
+        ln_gdp   = center[idx.get("ln_gdp_mean_city", 0)]
+        no2      = center[idx.get("no2_mean_city", 0)]
+        imperv   = center[idx.get("imperviousness_mean_city", 0)]
 
-    for cluster_id, center in enumerate(centers):
-        ndvi_slope = center[idx.get("ndvi_slope_city", 0)]
-        ln_gdp     = center[idx.get("ln_gdp_mean_city", 0)]
-        no2        = center[idx.get("no2_mean_city", 0)]
-        imperv     = center[idx.get("imperviousness_city", 0)]
-
-        # Heurística simple de etiquetado
-        gdp_high  = ln_gdp  > 0      # Después de escalar, > 0 = sobre la media
-        green_trend = ndvi_slope > 0
-        polluted   = no2 > 0
-        built_up   = imperv > 0
+        # Mediana global como referencia (post-scaling centro = 0 → mediana)
+        gdp_high    = ln_gdp > 0
+        green_trend = ndvi_yoy > 0
+        polluted    = no2 > 0
+        built_up    = imperv > 0
 
         if gdp_high and green_trend:
             label = "High-Income-Greening"
@@ -213,122 +193,127 @@ def label_clusters(model, assembler_cols):
 
         labels.append((cluster_id, label))
 
-    return labels  # lista de (cluster_id, label)
+    return labels
 
 
 # ==============================================================================
-# ACTUALIZAR GOLD
-# Escribe los resultados de clustering en fact_kuznets y model_results
+# ACTUALIZAR DIM_CLUSTER (SCD-2)
 # ==============================================================================
-def update_gold_with_clusters(spark, predictions_df, labels: list, best_k: int, best_sil: float):
-    print("\n  Actualizando Gold con asignaciones de cluster ...")
+def update_dim_cluster(pool, cluster_labels: list, best_k: int, best_sil: float,
+                        km_model, feature_names: list, city_assignments: dict):
+    """
+    Inserta o actualiza dim_cluster con los parametros del clustering actual.
+    SCD-2: cierra versiones anteriores e inserta nuevas.
+    """
+    today     = MODEL_RUN_DATE
+    yesterday = datetime.now(timezone.utc).date()
+    yesterday_str = (datetime(yesterday.year, yesterday.month, yesterday.day)
+                     - __import__("datetime").timedelta(days=1)).strftime("%Y-%m-%d")
 
-    # Crear lookup label
-    spark_labels = spark.createDataFrame(
-        [(c_id, label) for c_id, label in labels],
-        ["cluster_id_ref", "cluster_label"]
-    )
+    # Contar ciudades por cluster
+    from collections import Counter
+    city_counts = Counter(city_assignments.values())
 
-    preds_with_label = predictions_df.join(
-        spark_labels,
-        predictions_df["cluster_id"] == spark_labels["cluster_id_ref"],
-        how="left"
-    ).drop("cluster_id_ref")
+    for cluster_id, cluster_label in cluster_labels:
+        n_cities = city_counts.get(cluster_id, 0)
 
-    # --- Actualizar fact_kuznets ---
-    try:
-        fk = spark.read.parquet(f"{HDFS_GOLD}/fact_kuznets")
-    except Exception as e:
-        print(f"[SKIP] fact_kuznets no disponible en Gold (clustering): {e}")
-        return
+        # Cerrar version activa si existe
+        pool.execute_write(
+            """UPDATE dim_cluster SET valid_to=%s, is_current=0
+               WHERE cluster_id=%s AND is_current=1""",
+            (yesterday_str, cluster_id)
+        )
 
-    # Agregar silhouette y distancia al centroide por ciudad
-    evaluator = ClusteringEvaluator(
-        featuresCol="scaled_features",
-        predictionCol="cluster_id",
-        metricName="silhouette",
-        distanceMeasure="squaredEuclidean"
-    )
+        # Insertar nueva version
+        max_sk_row = pool.execute_query("SELECT COALESCE(MAX(cluster_sk),0) AS m FROM dim_cluster")
+        max_sk = (max_sk_row[0]["m"] or 0) + 1
 
-    cluster_info = preds_with_label.select(
-        "city_code", "cluster_id", "cluster_label",
-        F.lit(best_sil).cast(DoubleType()).alias("cluster_silhouette"),
-        F.lit(best_k).cast(IntegerType()).alias("kmeans_k_selected"),
-    )
+        pool.execute_write(
+            """INSERT INTO dim_cluster
+               (cluster_sk, cluster_id, cluster_label,
+                beta1, beta2, alpha,
+                turning_point_y_star, r_squared_adj,
+                ekc_shape, ekc_hypothesis_supported,
+                n_cities,
+                valid_from, valid_to, is_current)
+               VALUES (%s,%s,%s, %s,%s,%s, %s,%s, %s,%s, %s, %s,%s,%s)""",
+            (max_sk, cluster_id, cluster_label,
+             None, None, None,
+             None, safe_float(best_sil),
+             "PENDING", 0,
+             n_cities,
+             today, "9999-12-31", 1)
+        )
 
-    # Drop columnas de cluster anteriores y reemplazar
-    cols_to_drop = ["cluster_id", "cluster_label", "cluster_silhouette"]
-    fk_clean = fk.drop(*[c for c in cols_to_drop if c in fk.columns])
-
-    fk_updated = fk_clean.join(
-        cluster_info.select("city_code", "cluster_id", "cluster_label", "cluster_silhouette"),
-        on="city_code",
-        how="left"
-    )
-
-    # Materializar antes del overwrite para evitar FileNotFoundException por self-overwrite
-    fk_updated = fk_updated.cache()
-    fk_updated.count()
-
-    # Re-escribir fact_kuznets con clusters
-    (
-        fk_updated.write
-        .mode("overwrite")
-        .partitionBy("year", "country")
-        .parquet(f"{HDFS_GOLD}/fact_kuznets")
-    )
-    fk_updated.unpersist()
-    print(f"  [GOLD] fact_kuznets actualizado con cluster_id y cluster_label")
-
-    # --- Actualizar / crear model_results ---
-    try:
-        mr = spark.read.parquet(f"{HDFS_GOLD}/model_results")
-    except Exception:
-        mr = None
-
-    new_mr_rows = (
-        preds_with_label
-        .select("city_code", "cluster_id", "cluster_label", "cluster_silhouette", "kmeans_k_selected")
-        .withColumnRenamed("cluster_id",        "kmeans_cluster_id")
-        .withColumnRenamed("cluster_label",     "kmeans_cluster_label")
-        .withColumnRenamed("cluster_silhouette","kmeans_silhouette")
-    )
-
-    if mr is not None and mr.count() > 0:
-        # Merge: actualizar columnas de kmeans en model_results existente
-        mr_clean = mr.drop("kmeans_cluster_id", "kmeans_cluster_label", "kmeans_silhouette", "kmeans_k_selected")
-        mr_updated = mr_clean.join(new_mr_rows, on="city_code", how="left")
-    else:
-        mr_updated = new_mr_rows
-
-    writer = mr_updated.write.mode("overwrite")
-    if "year" in mr_updated.columns and "country" in mr_updated.columns:
-        writer = writer.partitionBy("year", "country")
-    writer.parquet(f"{HDFS_GOLD}/model_results")
-    print(f"  [GOLD] model_results actualizado con resultados K-Means")
+    print(f"  [DIM_CLUSTER] {len(cluster_labels)} clusters insertados/actualizados (SCD-2)")
 
 
 # ==============================================================================
-# GUARDAR MODELO
+# ACTUALIZAR FACT_KUZNETS CON CLUSTERS
 # ==============================================================================
-def save_model(model, k: int, silhouette: float):
-    model_path = f"{HDFS_MODELS}/kmeans_k{k}_{MODEL_RUN_DATE}"
-    try:
-        model.write().overwrite().save(model_path)
-        print(f"  [MODEL] Guardado en: {model_path}")
-    except Exception as e:
-        print(f"  [WARN] No se pudo guardar el modelo: {e}")
+def update_fact_kuznets(pool, city_cluster_map: dict, cluster_label_map: dict, best_sil: float):
+    """
+    Actualiza cluster_id, cluster_label, cluster_silhouette en fact_kuznets.
+    city_cluster_map: city_sk -> cluster_id
+    """
+    print("  Actualizando fact_kuznets con cluster_id ...")
+    for city_sk, cluster_id in city_cluster_map.items():
+        label = cluster_label_map.get(cluster_id, f"Cluster_{cluster_id}")
+        pool.execute_write(
+            """UPDATE fact_kuznets
+               SET cluster_id=%s, cluster_label=%s, cluster_silhouette=%s
+               WHERE city_sk=%s""",
+            (cluster_id, label, safe_float(best_sil), int(city_sk))
+        )
+    print(f"  [FACT_KUZNETS] cluster_id actualizado para {len(city_cluster_map)} ciudades")
 
-    # Guardar metadata JSON en HDFS
-    meta = {
-        "k": k,
-        "silhouette": silhouette,
-        "features": CLUSTER_FEATURES,
-        "model_version": MODEL_VERSION,
-        "run_date": MODEL_RUN_DATE,
-        "model_path": model_path,
-    }
-    print(f"  [META] {json.dumps(meta, indent=2)}")
+
+# ==============================================================================
+# ACTUALIZAR MODEL_RESULTS
+# ==============================================================================
+def update_model_results(pool, df, cluster_label_map: dict, best_k: int, best_sil: float):
+    """Inserta/actualiza model_results con resultados K-Means."""
+    # Obtener city_sk -> (year_list, month_list) de fact_kuznets
+    fk_rows = pool.execute_query(
+        "SELECT DISTINCT city_sk, year, month FROM fact_kuznets"
+    )
+    fk_lookup = {}
+    for r in fk_rows:
+        sk = r["city_sk"]
+        if sk not in fk_lookup:
+            fk_lookup[sk] = []
+        fk_lookup[sk].append((r["year"], r["month"]))
+
+    sql = """
+        INSERT INTO model_results
+            (city_sk, year, month,
+             kmeans_cluster_id, kmeans_cluster_label,
+             kmeans_silhouette, kmeans_k_selected,
+             _model_run_date, _pipeline_version)
+        VALUES (%s,%s,%s, %s,%s, %s,%s, %s,%s)
+        ON DUPLICATE KEY UPDATE
+            kmeans_cluster_id=VALUES(kmeans_cluster_id),
+            kmeans_cluster_label=VALUES(kmeans_cluster_label),
+            kmeans_silhouette=VALUES(kmeans_silhouette),
+            kmeans_k_selected=VALUES(kmeans_k_selected),
+            _model_run_date=VALUES(_model_run_date)
+    """
+    rows = []
+    for _, row in df.iterrows():
+        city_sk    = safe_int(row["city_sk"])
+        cluster_id = safe_int(row.get("cluster_id"))
+        label      = cluster_label_map.get(cluster_id, f"Cluster_{cluster_id}")
+        ym_list    = fk_lookup.get(city_sk, [])
+        for year, month in ym_list:
+            rows.append((
+                city_sk, year, month,
+                cluster_id, label,
+                safe_float(best_sil), best_k,
+                MODEL_RUN_DATE, MODEL_VERSION,
+            ))
+
+    pool.execute_many(sql, rows) if rows else None
+    print(f"  [MODEL_RESULTS] {len(rows)} filas actualizadas con K-Means")
 
 
 # ==============================================================================
@@ -336,84 +321,76 @@ def save_model(model, k: int, silhouette: float):
 # ==============================================================================
 def main():
     parser = argparse.ArgumentParser(description="GTP K-Means Clustering")
-    parser.add_argument("--k-min",  type=int, default=2, help="K mínimo a evaluar (default: 2)")
-    parser.add_argument("--k-max",  type=int, default=8, help="K máximo a evaluar (default: 8)")
-    parser.add_argument("--seed",   type=int, default=42, help="Semilla aleatoria (default: 42)")
+    parser.add_argument("--k-min",  type=int, default=2)
+    parser.add_argument("--k-max",  type=int, default=8)
+    parser.add_argument("--seed",   type=int, default=42)
     args = parser.parse_args()
 
     print("=" * 65)
     print("  GTP — MODELO 1: K-MEANS CLUSTERING")
-    print(f"  K range: {args.k_min}–{args.k_max}  |  Seed: {args.seed}")
+    print(f"  K range: {args.k_min}-{args.k_max}  |  Seed: {args.seed}")
     print(f"  Features: {CLUSTER_FEATURES}")
+    print(f"  Fuente: MariaDB Silver")
     print("=" * 65)
 
-    spark = get_spark()
+    try:
+        from sklearn.preprocessing import StandardScaler
+    except ImportError:
+        print("[ERROR] scikit-learn no instalado: pip install scikit-learn")
+        sys.exit(1)
 
-    # 1. Construir matriz de features
-    features_df = build_feature_matrix(spark)
-    if features_df is None:
-        print("[SKIP] Clustering omitido: Silver no disponible.")
-        spark.stop()
+    pool = get_pool()
+
+    # 1. Construir feature matrix
+    df, city_df = build_feature_matrix(pool)
+    if df is None:
+        print("[SKIP] Clustering omitido.")
         return
 
-    # 2. Ensamblar vector de features
-    assembler = VectorAssembler(
-        inputCols=[c for c in CLUSTER_FEATURES if c in features_df.columns],
-        outputCol="raw_features",
-        handleInvalid="skip"
-    )
-    df_vec = assembler.transform(features_df)
+    used_features = [c for c in CLUSTER_FEATURES if c in df.columns]
+    X = df[used_features].values
 
-    # 3. Escalar (StandardScaler: media 0, varianza 1)
-    scaler = StandardScaler(
-        inputCol="raw_features",
-        outputCol="scaled_features",
-        withMean=True,
-        withStd=True
-    )
-    scaler_model = scaler.fit(df_vec)
-    df_scaled    = scaler_model.transform(df_vec)
+    # 2. Escalar
+    scaler  = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
 
-    # 4. Seleccionar K óptimo
-    best_k, best_sil, best_model = select_best_k(df_scaled, args.k_min, args.k_max, args.seed)
+    # 3. Seleccionar K optimo
+    result = select_best_k(X_scaled, args.k_min, args.k_max, args.seed)
+    if result is None:
+        print("[ERROR] No se pudo determinar K optimo.")
+        return
 
-    # 5. Predicciones finales con el mejor modelo
-    predictions = best_model.transform(df_scaled)
+    best_k, best_sil, best_model, cluster_labels_arr = result
 
-    # 6. Calcular silhouette individual por punto
-    evaluator = ClusteringEvaluator(
-        featuresCol="scaled_features",
-        predictionCol="cluster_id",
-        metricName="silhouette",
-        distanceMeasure="squaredEuclidean"
-    )
+    # 4. Etiquetas por cluster
+    labels_list    = label_clusters(best_model, used_features, scaler)
+    cluster_label_map = {cid: lbl for cid, lbl in labels_list}
 
-    # 7. Asignar etiquetas interpretables a cada cluster
-    used_features = [c for c in CLUSTER_FEATURES if c in features_df.columns]
-    labels = label_clusters(best_model, used_features)
+    df["cluster_id"] = cluster_labels_arr.tolist()
 
-    print("\n  Asignaciones de cluster:")
-    for c_id, label in labels:
-        count = predictions.filter(F.col("cluster_id") == c_id).count()
-        print(f"    Cluster {c_id} [{label}]: {count} ciudades")
+    print("\n  Asignaciones:")
+    from collections import Counter
+    cnt = Counter(cluster_labels_arr)
+    for cid, lbl in labels_list:
+        print(f"    Cluster {cid} [{lbl}]: {cnt[cid]} ciudades")
 
-    # 8. Agregar silhouette global al DataFrame
-    predictions = (
-        predictions
-        .withColumn("cluster_silhouette", F.lit(best_sil).cast(DoubleType()))
-        .withColumn("kmeans_k_selected",  F.lit(best_k).cast(IntegerType()))
-    )
+    # 5. Mapas
+    city_cluster_map = dict(zip(df["city_sk"].tolist(), df["cluster_id"].tolist()))
+    city_assignments = city_cluster_map
 
-    # 9. Actualizar Gold
-    update_gold_with_clusters(spark, predictions, labels, best_k, best_sil)
+    # 6. Actualizar dim_cluster (SCD-2)
+    update_dim_cluster(pool, labels_list, best_k, best_sil,
+                       best_model, used_features, city_assignments)
 
-    # 10. Guardar modelo
-    save_model(best_model, best_k, best_sil)
+    # 7. Actualizar fact_kuznets
+    update_fact_kuznets(pool, city_cluster_map, cluster_label_map, best_sil)
+
+    # 8. Actualizar model_results
+    update_model_results(pool, df, cluster_label_map, best_k, best_sil)
 
     print("\n" + "=" * 65)
     print(f"  CLUSTERING COMPLETADO | K={best_k} | Silhouette={best_sil:.4f}")
     print("=" * 65)
-    spark.stop()
 
 
 if __name__ == "__main__":

@@ -34,7 +34,7 @@ import config
 # CONFIGURACIÓN
 # ==============================================================================
 GOOGLE_PROJECT = "gtpuem23"
-START_YEAR     = 2018           # ERA5-Land disponible desde 1950; usamos 2018 para alinear con S2
+START_YEAR     = 2004           # ERA5-Land disponible desde 1950; extendido a 2004 para alinear con Landsat
 SCALE_M        = 11_132         # ~0.1°, resolución nativa ERA5-Land (~9 km)
 MAX_WORKERS    = 8
 MAX_RETRIES    = 4
@@ -61,14 +61,19 @@ except Exception as e:
 # ==============================================================================
 # IDEMPOTENCIA — cargar progreso previo
 # ==============================================================================
-def load_done(csv_path: Path) -> set:
-    """Devuelve el conjunto de (City, Year, Month) ya escritos en el CSV."""
+def load_done(csv_path: Path, retry_missing: bool = False) -> set:
+    """
+    Devuelve el conjunto de (City, Year, Month) ya procesados.
+    - retry_missing=True: excluye filas sin datos (Temp_Mean_C vacío) → se reintentarán.
+    """
     if not csv_path.exists():
         return set()
     done = set()
     with open(csv_path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             try:
+                if retry_missing and not row.get("Temp_Mean_C"):
+                    continue
                 done.add((row["City"], int(row["Year"]), int(row["Month"])))
             except (KeyError, ValueError):
                 pass
@@ -159,10 +164,12 @@ def main():
     parser = argparse.ArgumentParser(
         description="GTP ERA5-Land — temperatura y precipitación mensual vía GEE"
     )
-    parser.add_argument("--start-year", type=int, default=START_YEAR,
+    parser.add_argument("--start-year",    type=int,  default=START_YEAR,
                         help=f"Año de inicio (default: {START_YEAR})")
-    parser.add_argument("--workers",    type=int, default=MAX_WORKERS,
+    parser.add_argument("--workers",       type=int,  default=MAX_WORKERS,
                         help=f"Hilos paralelos (default: {MAX_WORKERS})")
+    parser.add_argument("--retry-missing", action="store_true",
+                        help="Reintentar meses sin datos ERA5 del CSV anterior")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -174,8 +181,10 @@ def main():
     print("=" * 60)
 
     init_csv(OUTPUT_CSV)
-    done = load_done(OUTPUT_CSV)
+    done = load_done(OUTPUT_CSV, retry_missing=args.retry_missing)
     print(f"  Registros ya procesados: {len(done):,}")
+    if args.retry_missing:
+        print("  [retry-missing] Se reintentarán meses sin datos previos.")
 
     now   = datetime.datetime.now()
     tasks = [
@@ -196,11 +205,15 @@ def main():
 
         for i, future in enumerate(as_completed(futures), 1):
             result = future.result()
+            task   = futures[future]
+            city, _, year, month = task
 
             if isinstance(result, tuple):
                 append_row(OUTPUT_CSV, result)
                 ok += 1
             elif isinstance(result, str) and "[WARN]" in result:
+                # Sin datos ERA5 ese mes → escribir fila vacía para no reintentar
+                append_row(OUTPUT_CSV, (city, year, month, "", ""))
                 warn += 1
                 if warn % 200 == 0:
                     print(result)

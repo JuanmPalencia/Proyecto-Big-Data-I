@@ -169,11 +169,25 @@ python Lorca/ETL/script/run_all.py
 spark-submit Lorca/BBDD/run_pipeline.py
 ```
 
-### Docker (local/dev)
+### Docker (local/dev — pipeline completo verificado)
 
 ```bash
-docker-compose --profile etl --profile db up --build
+cd Docker/
+
+# 1. Infraestructura (MariaDB + Hive metastore)
+docker compose up -d
+
+# 2. GEE auth (solo la primera vez)
+docker compose run --rm etl earthengine authenticate
+
+# 3. Pipeline completo: ETL + Bronze + Silver + Gold + ML
+docker compose --profile etl run --rm etl
+
+# 4. API Flask (http://localhost:5000)
+docker compose --profile api up -d api
 ```
+
+**Resultados validados (2026-03-19):** 29.602 filas en `fact_kuznets`, K=3 clusters (Silhouette=0.2480), 658 ciudades-mes clasificadas como TURNING en 2023.
 
 ---
 

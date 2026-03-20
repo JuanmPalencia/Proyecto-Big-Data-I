@@ -60,7 +60,7 @@ os.makedirs(OUT_DIR, exist_ok=True)
 BASE = "https://sdmx.oecd.org/public/rest/data"
 
 # Lee la variable de entorno "OECD_START_YEAR"; si no existe, usa "2010"
-DEFAULT_START = os.getenv("OECD_START_YEAR", "2010")
+DEFAULT_START = os.getenv("OECD_START_YEAR", "2004")
 
 # Lee la variable de entorno "OECD_END_YEAR"; si no existe, usa "2023"
 DEFAULT_END   = os.getenv("OECD_END_YEAR",   "2023")
@@ -175,18 +175,6 @@ DATA_URLS: Dict[str, str] = {
         ".LF.._Z._T....A?startPeriod={start}&endPeriod={end}&dimensionAtObservation=AllDimensions"
     ),
 
-    # Social / bienestar / salud
-    # Define la plantilla para "bli_indicators"(Better Life Index)
-    "bli_indicators": (
-        f"{BASE}/BLI/"
-        "all?startPeriod={start}&endPeriod={end}&dimensionAtObservation=AllDimensions"
-    ),
-
-    # Define la plantilla para "regional_wellbeing"(bienestar regional)
-    "regional_wellbeing": (
-        f"{BASE}/REG_WELL_BEING/"
-        "all?startPeriod={start}&endPeriod={end}&dimensionAtObservation=AllDimensions"
-    ),
 
     # Define la plantilla para "health_expenditure"(gasto en salud)
     "health_expenditure": (

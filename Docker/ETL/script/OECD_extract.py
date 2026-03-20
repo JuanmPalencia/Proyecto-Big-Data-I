@@ -60,7 +60,7 @@ os.makedirs(OUT_DIR, exist_ok=True)
 BASE = "https://sdmx.oecd.org/public/rest/data"
 
 # Lee la variable de entorno "OECD_START_YEAR"; si no existe, usa "2010"
-DEFAULT_START = os.getenv("OECD_START_YEAR", "2010")
+DEFAULT_START = os.getenv("OECD_START_YEAR", "2004")
 
 # Lee la variable de entorno "OECD_END_YEAR"; si no existe, usa "2023"
 DEFAULT_END   = os.getenv("OECD_END_YEAR",   "2023")

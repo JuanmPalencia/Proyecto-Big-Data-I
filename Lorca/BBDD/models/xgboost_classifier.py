@@ -2,37 +2,18 @@
 xgboost_classifier.py — GTP (Green Turning Point) | Modelo 3: XGBoost Classifier
 Predice la fase EKC de cada ciudad sin asumir forma de curva.
 
-Problema:
-  La regresión EKC estima Y* teórico, pero no dice "dónde está la ciudad ahora".
-  Este clasificador lee los datos observados y predice directamente:
-    DEGRADANDO   → NDVI bajando, GDP bajo respecto a Y*
-    TURNING      → NDVI estabilizándose, GDP cerca de Y*
-    RECUPERANDO  → NDVI subiendo, GDP superó Y*
+Fases:
+  DEGRADANDO   → NDVI bajando, GDP bajo respecto a Y*
+  TURNING      → NDVI estabilizandose, GDP cerca de Y*
+  RECUPERANDO  → NDVI subiendo, GDP supero Y*
 
-Ventaja sobre la regresión:
-  XGBoost no asume que la curva EKC existe. Si la curva no se cumple para
-  una ciudad específica, el modelo lo detectará por los datos observados.
-  Es el "fact-check" del modelo paramétrico.
+Lee fact_kuznets desde MariaDB (ya tiene cluster_id + EKC params).
+Actualiza MariaDB:
+  - fact_kuznets: turning_point_phase, phase_confidence, investment_score, investment_recommendation
+  - model_results: xgb_predicted_phase, xgb_prob_*, xgb_confidence
 
-Etiquetado (label generation):
-  Las etiquetas se crean automáticamente combinando:
-    - ndvi_yoy_change   : tendencia reciente del NDVI
-    - gdp_gap_to_turning: distancia del GDP actual al Y* del cluster
-    - ndvi_trend_slope  : pendiente histórica del NDVI
-  Reglas:
-    TURNING    = ndvi_yoy_change > -0.001 AND |gdp_gap| < 0.15 * Y*
-    RECUPERANDO= ndvi_trend_slope > 0.003 AND gdp_pps > Y*
-    DEGRADANDO = el resto
-
-Features del modelo:
-  ndvi_mean, ndvi_trend_slope, ndvi_yoy_change, no2_mean,
-  imperviousness_mean, ln_gdp_pps, ln_gdp_pps_sq, gdp_growth_rate,
-  cluster_id, green_index, gdp_gap_to_turning, year
-
-Train/test split: temporal — años ≤ (max_year - 2) para train, resto test.
-
-Ejecución:
-  spark-submit --master yarn models/xgboost_classifier.py [--threshold 0.5]
+Ejecucion:
+  python models/xgboost_classifier.py [--threshold 0.5] [--test-years 2]
 """
 
 import sys
@@ -42,25 +23,19 @@ import warnings
 import numpy as np
 import pandas as pd
 from datetime import datetime, timezone
+from pathlib import Path
 
 warnings.filterwarnings("ignore")
 
-from pyspark.sql import SparkSession
-from pyspark.sql import functions as F
-from pyspark.sql.types import StructType, StructField, StringType, DoubleType, IntegerType
-
 # ==============================================================================
-# CONFIGURACIÓN
+# CONFIGURACION
 # ==============================================================================
-HDFS_GOLD       = "hdfs:///user/gtp/gold"
-HDFS_MODELS     = "hdfs:///user/gtp/models/xgboost"
-MODEL_VERSION   = "1.0"
-MODEL_RUN_DATE  = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+CONFIG_FILE   = str(Path(__file__).resolve().parent.parent.parent / "config.ini")
+MODEL_VERSION = "1.0"
+MODEL_RUN_DATE = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-# Features para el clasificador
 XGB_FEATURES = [
     "ndvi_mean",
-    "ndvi_trend_slope",
     "ndvi_yoy_change",
     "no2_mean",
     "imperviousness_mean",
@@ -75,65 +50,90 @@ XGB_FEATURES = [
 
 CLASSES = ["DEGRADANDO", "TURNING", "RECUPERANDO"]
 
-# ==============================================================================
-# SPARK
-# ==============================================================================
-def get_spark():
-    return (
-        SparkSession.builder
-        .appName("GTP_XGBoost_Classifier")
-        .config("spark.sql.shuffle.partitions", "50")
-        .config("spark.sql.parquet.compression.codec", "snappy")
-        .enableHiveSupport()
-        .getOrCreate()
-    )
 
 # ==============================================================================
-# CARGAR Y ETIQUETAR DATOS
+# DB POOL
 # ==============================================================================
-def load_and_label_data(spark):
-    print("  Cargando fact_kuznets desde Gold ...")
+def get_pool():
+    bbdd_dir = str(Path(__file__).resolve().parent.parent)
+    if bbdd_dir not in sys.path:
+        sys.path.insert(0, bbdd_dir)
+    from db_pool import MariaDBPool
+    return MariaDBPool(config_file=CONFIG_FILE)
 
-    try:
-        fk = spark.read.parquet(f"{HDFS_GOLD}/fact_kuznets")
-    except Exception as e:
-        print(f"[SKIP] fact_kuznets no disponible en Gold (xgboost): {e}")
+
+def safe_float(v):
+    if v is None:
         return None
-    needed = XGB_FEATURES + [
-        "city_code", "city_name", "country_code",
-        "ekc_turning_point_y", "gdp_pps_per_capita"
-    ]
-    existing = [c for c in needed if c in fk.columns]
-    pdf = fk.select(existing).toPandas()
+    try:
+        f = float(v)
+        return None if f != f else f
+    except Exception:
+        return None
 
-    print(f"  Registros cargados: {len(pdf):,}")
 
-    # --- Generar etiquetas ---
+def safe_int(v):
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except Exception:
+        return None
+
+
+# ==============================================================================
+# CARGAR Y ETIQUETAR DATOS DESDE MARIADB
+# Agrega a nivel ciudad x anio (promedio de los 12 meses) para el clasificador
+# ==============================================================================
+def load_and_label_data(pool):
+    print("  Cargando fact_kuznets desde MariaDB ...")
+
+    # Agregar mensual → anual para el clasificador
+    rows = pool.execute_query("""
+        SELECT fk.city_sk, dc.city_code, dc.country_code,
+               fk.year,
+               AVG(fk.ndvi_mean)            AS ndvi_mean,
+               AVG(fk.ndvi_yoy_change)      AS ndvi_yoy_change,
+               AVG(fk.no2_mean)             AS no2_mean,
+               AVG(fk.imperviousness_mean)  AS imperviousness_mean,
+               AVG(fk.ln_gdp_pps)           AS ln_gdp_pps,
+               AVG(fk.ln_gdp_pps_sq)        AS ln_gdp_pps_sq,
+               AVG(fk.gdp_growth_rate)      AS gdp_growth_rate,
+               MAX(fk.cluster_id)           AS cluster_id,
+               AVG(fk.green_index)          AS green_index,
+               AVG(fk.gdp_gap_to_turning)   AS gdp_gap_to_turning,
+               AVG(fk.ekc_turning_point_y)  AS ekc_turning_point_y,
+               AVG(fk.gdp_pps_per_capita)   AS gdp_pps_per_capita
+        FROM fact_kuznets fk
+        JOIN dim_city dc ON fk.city_sk = dc.city_sk
+        GROUP BY fk.city_sk, dc.city_code, dc.country_code, fk.year
+    """)
+
+    if not rows:
+        print("  [SKIP] fact_kuznets vacia.")
+        return None
+
+    pdf = pd.DataFrame(rows)
+    print(f"  Registros: {len(pdf):,} ciudad x anio")
+
+    # Generar etiquetas
     def label_phase(row):
-        slope     = row.get("ndvi_trend_slope", 0) or 0
-        yoy       = row.get("ndvi_yoy_change",  0) or 0
-        gap       = row.get("gdp_gap_to_turning", None)
-        gdp       = row.get("gdp_pps_per_capita", None)
-        tp        = row.get("ekc_turning_point_y", None)
+        slope = float(row.get("ndvi_yoy_change") or 0)
+        gap   = safe_float(row.get("gdp_gap_to_turning"))
+        gdp   = safe_float(row.get("gdp_pps_per_capita"))
+        tp    = safe_float(row.get("ekc_turning_point_y"))
+        tol   = (tp * 0.15) if tp and tp > 0 else None
 
-        # Tolerancia: 15% del turning point
-        tol = (tp * 0.15) if tp else None
-
-        # TURNING: NDVI estabilizándose Y GDP cercano al turning point
         if tol is not None and gap is not None and abs(gap) <= tol:
             return "TURNING"
-
-        # RECUPERANDO: NDVI creciendo Y GDP superó Y*
         if slope > 0.003 and gap is not None and gap > 0:
             return "RECUPERANDO"
-
-        # DEGRADANDO: por defecto (incluye ciudades donde falta turning point)
         return "DEGRADANDO"
 
     pdf["phase_label"] = pdf.apply(label_phase, axis=1)
 
     dist = pdf["phase_label"].value_counts()
-    print(f"\n  Distribución de fases:")
+    print("\n  Distribucion de fases:")
     for phase, count in dist.items():
         print(f"    {phase}: {count:,} ({count/len(pdf)*100:.1f}%)")
 
@@ -142,35 +142,30 @@ def load_and_label_data(spark):
 
 # ==============================================================================
 # TRAIN / TEST SPLIT TEMPORAL
-# No usamos random split: respetamos el orden temporal para evitar data leakage.
 # ==============================================================================
 def temporal_split(pdf, test_years: int = 2):
-    max_year = pdf["year"].max()
+    max_year = int(pdf["year"].max())
     cutoff   = max_year - test_years
-
-    train = pdf[pdf["year"] <= cutoff].copy()
-    test  = pdf[pdf["year"] >  cutoff].copy()
-
-    print(f"\n  Train: años ≤ {cutoff} ({len(train):,} obs)")
-    print(f"  Test:  años > {cutoff} ({len(test):,}  obs)")
+    train    = pdf[pdf["year"] <= cutoff].copy()
+    test     = pdf[pdf["year"] >  cutoff].copy()
+    print(f"\n  Train: anos <= {cutoff} ({len(train):,} obs)")
+    print(f"  Test:  anos > {cutoff}  ({len(test):,} obs)")
     return train, test
 
 
 # ==============================================================================
 # ENTRENAR XGBOOST
 # ==============================================================================
-def train_xgboost(train, test, threshold: float = 0.5):
+def train_xgboost(train, test):
     try:
         import xgboost as xgb
         from sklearn.preprocessing import LabelEncoder
-        from sklearn.metrics import (classification_report, f1_score,
-                                     confusion_matrix)
+        from sklearn.metrics import f1_score, classification_report
     except ImportError:
         print("[ERROR] xgboost o scikit-learn no instalados.")
         print("        Instala: pip install xgboost scikit-learn")
         return None, None, None
 
-    # --- Preparar features ---
     feature_cols = [c for c in XGB_FEATURES if c in train.columns]
 
     X_train = train[feature_cols].fillna(0)
@@ -181,12 +176,11 @@ def train_xgboost(train, test, threshold: float = 0.5):
     y_train = le.transform(train["phase_label"])
     y_test  = le.transform(test["phase_label"])
 
-    # --- Pesos de clase para balanceo (TURNING es la clase minoritaria) ---
-    class_counts = np.bincount(y_train)
-    class_weights = len(y_train) / (len(CLASSES) * class_counts)
+    # Pesos para balanceo
+    class_counts  = np.bincount(y_train)
+    class_weights = len(y_train) / (len(CLASSES) * class_counts.clip(1))
     sample_weights = np.array([class_weights[y] for y in y_train])
 
-    # --- Modelo XGBoost ---
     clf = xgb.XGBClassifier(
         n_estimators=200,
         max_depth=5,
@@ -199,7 +193,6 @@ def train_xgboost(train, test, threshold: float = 0.5):
         reg_lambda=1.0,
         objective="multi:softprob",
         num_class=len(CLASSES),
-        use_label_encoder=False,
         eval_metric="mlogloss",
         early_stopping_rounds=20,
         random_state=42,
@@ -213,23 +206,19 @@ def train_xgboost(train, test, threshold: float = 0.5):
         verbose=False,
     )
 
-    # --- Evaluación ---
-    y_pred  = clf.predict(X_test)
-    y_proba = clf.predict_proba(X_test)
-
-    f1_macro = f1_score(y_test, y_pred, average="macro")
+    y_pred = clf.predict(X_test)
+    f1_macro    = f1_score(y_test, y_pred, average="macro")
     f1_weighted = f1_score(y_test, y_pred, average="weighted")
 
-    print(f"\n  Resultados en Test (años > {test['year'].min() - 1}):")
-    print(f"  F1 Macro:    {f1_macro:.4f}")
+    print(f"\n  F1 Macro:    {f1_macro:.4f}")
     print(f"  F1 Weighted: {f1_weighted:.4f}")
-    print("\n  Report detallado:")
-    print(classification_report(y_test, y_pred, target_names=CLASSES))
+    print("\n  Report:")
+    print(classification_report(y_test, y_pred, target_names=CLASSES,
+                                labels=list(range(len(CLASSES))), zero_division=0))
 
-    # Feature importance
     fi = dict(zip(feature_cols, clf.feature_importances_))
     top5 = sorted(fi.items(), key=lambda x: x[1], reverse=True)[:5]
-    print(f"\n  Top-5 features:")
+    print("  Top-5 features:")
     for feat, imp in top5:
         print(f"    {feat}: {imp:.4f}")
 
@@ -237,144 +226,111 @@ def train_xgboost(train, test, threshold: float = 0.5):
 
 
 # ==============================================================================
-# PREDICCIÓN SOBRE TODO EL DATASET
+# PREDICCION SOBRE TODO EL DATASET
 # ==============================================================================
 def predict_all(clf, le, feature_cols, pdf_full):
-    X_all = pdf_full[feature_cols].fillna(0)
-    y_proba = clf.predict_proba(X_all)
-
-    fi      = dict(zip(feature_cols, clf.feature_importances_))
-    top5    = sorted(fi.items(), key=lambda x: x[1], reverse=True)[:5]
-    top5_json = json.dumps({k: float(v) for k, v in top5})
-
+    X_all    = pdf_full[feature_cols].fillna(0)
+    y_proba  = clf.predict_proba(X_all)
     pdf_full = pdf_full.copy()
+
     for i, cls in enumerate(le.classes_):
-        col = f"xgb_prob_{cls.lower()}"
-        pdf_full[col] = y_proba[:, i]
+        pdf_full[f"xgb_prob_{cls.lower()}"] = y_proba[:, i]
 
     pdf_full["xgb_predicted_phase"] = le.inverse_transform(y_proba.argmax(axis=1))
     pdf_full["xgb_confidence"]      = y_proba.max(axis=1)
-    pdf_full["xgb_feature_importance"] = top5_json
+
+    fi     = dict(zip(feature_cols, clf.feature_importances_))
+    top5   = sorted(fi.items(), key=lambda x: x[1], reverse=True)[:5]
+    fi_json = json.dumps({k: float(v) for k, v in top5})
+    pdf_full["xgb_feature_importance"] = fi_json
 
     return pdf_full
 
 
 # ==============================================================================
-# ACTUALIZAR GOLD
+# ACTUALIZAR MARIADB
 # ==============================================================================
-def update_gold(spark, pdf_predictions):
-    print("\n  Actualizando Gold con predicciones XGBoost ...")
+def update_mariadb(pool, pdf_predictions):
+    print("\n  Actualizando MariaDB con predicciones XGBoost ...")
 
-    # --- Actualizar fact_kuznets ---
-    try:
-        fk = spark.read.parquet(f"{HDFS_GOLD}/fact_kuznets")
-    except Exception as e:
-        print(f"[SKIP] fact_kuznets no disponible para actualización XGBoost: {e}")
-        return
-
-    pred_cols = [
-        "city_code", "year",
-        "xgb_predicted_phase", "xgb_confidence",
-        "xgb_prob_degradando", "xgb_prob_turning", "xgb_prob_recuperando",
-    ]
-    existing_pred = [c for c in pred_cols if c in pdf_predictions.columns]
-    pred_spark = spark.createDataFrame(pdf_predictions[existing_pred])
-
-    # Drop columnas XGB anteriores (para evitar COLUMN_ALREADY_EXISTS en re-ejecuciones)
-    drop_cols = ["turning_point_phase", "phase_confidence",
-                 "xgb_predicted_phase", "xgb_confidence",
-                 "xgb_prob_degradando", "xgb_prob_turning", "xgb_prob_recuperando"]
-    fk_clean = fk.drop(*[c for c in drop_cols if c in fk.columns])
-
-    fk_updated = fk_clean.join(
-        pred_spark.withColumnRenamed("xgb_predicted_phase", "turning_point_phase")
-                  .withColumnRenamed("xgb_confidence",      "phase_confidence"),
-        on=["city_code", "year"],
-        how="left"
-    )
-
-    # Recalcular investment_score con la fase ahora disponible
-    fk_updated = fk_updated.withColumn(
-        "investment_score",
-        F.round(
-            F.coalesce(F.col("green_index"), F.lit(0.0)) * 50.0
-            + F.coalesce(F.col("phase_confidence"), F.lit(0.5)) * 30.0
-            + F.when(F.col("turning_point_phase") == "TURNING",    F.lit(20.0))
-               .when(F.col("turning_point_phase") == "RECUPERANDO", F.lit(15.0))
-               .otherwise(F.lit(0.0)),
-            2
+    # Actualizar fact_kuznets (para todos los meses del anio)
+    for _, row in pdf_predictions.iterrows():
+        city_sk = safe_int(row["city_sk"])
+        year    = safe_int(row["year"])
+        phase   = str(row.get("xgb_predicted_phase", "DEGRADANDO"))
+        conf    = safe_float(row.get("xgb_confidence"))
+        gi      = safe_float(row.get("green_index"))
+        tp      = safe_float(row.get("ekc_turning_point_y"))
+        tp_score = 20.0 if phase == "TURNING" else (15.0 if phase == "RECUPERANDO" else 0.0)
+        inv_score = round(
+            (gi or 0.0) * 50.0 + (conf or 0.5) * 30.0 + tp_score, 2
         )
-    )
-
-    fk_updated = fk_updated.withColumn(
-        "investment_recommendation",
-        F.when(F.col("investment_score") >= 75, "STRONG_BUY")
-         .when(F.col("investment_score") >= 55, "BUY")
-         .when(F.col("investment_score") >= 35, "HOLD")
-         .otherwise("AVOID")
-    )
-
-    # Materializar antes del overwrite para evitar FileNotFoundException por self-overwrite
-    fk_updated = fk_updated.cache()
-    fk_updated.count()
-
-    (
-        fk_updated.write
-        .mode("overwrite")
-        .partitionBy("year", "country")
-        .parquet(f"{HDFS_GOLD}/fact_kuznets")
-    )
-    fk_updated.unpersist()
-    print("  [GOLD] fact_kuznets actualizado con fases XGBoost e investment_score refinado")
-
-    # --- Actualizar model_results ---
-    try:
-        mr = spark.read.parquet(f"{HDFS_GOLD}/model_results")
-        mr_clean = mr.drop("xgb_predicted_phase", "xgb_prob_degradando",
-                           "xgb_prob_turning", "xgb_prob_recuperando",
-                           "xgb_confidence", "xgb_feature_importance")
-        xgb_cols = [
-            "city_code", "year",
-            "xgb_predicted_phase", "xgb_prob_degradando", "xgb_prob_turning",
-            "xgb_prob_recuperando", "xgb_confidence", "xgb_feature_importance"
-        ]
-        xgb_existing = [c for c in xgb_cols if c in pdf_predictions.columns]
-        xgb_spark = spark.createDataFrame(pdf_predictions[xgb_existing])
-        mr_updated = mr_clean.join(xgb_spark, on=["city_code", "year"], how="left")
-    except Exception:
-        mr_updated = spark.createDataFrame(
-            pdf_predictions[[c for c in pred_cols + ["xgb_feature_importance"] if c in pdf_predictions.columns]]
+        inv_rec = (
+            "STRONG_BUY" if inv_score >= 75 else
+            "BUY"        if inv_score >= 55 else
+            "HOLD"       if inv_score >= 35 else
+            "AVOID"
         )
 
-    writer = mr_updated.write.mode("overwrite")
-    if "year" in mr_updated.columns and "country" in mr_updated.columns:
-        writer = writer.partitionBy("year", "country")
-    writer.parquet(f"{HDFS_GOLD}/model_results")
-    print("  [GOLD] model_results actualizado con resultados XGBoost")
-
-
-# ==============================================================================
-# GUARDAR MODELO
-# ==============================================================================
-def save_model(clf, le, feature_cols):
-    try:
-        import joblib
-        import tempfile
-        from pyspark.sql import SparkSession
-
-        model_data = {"model": clf, "label_encoder": le, "features": feature_cols}
-        local_path = f"/tmp/gtp_xgb_{MODEL_RUN_DATE}.joblib"
-        joblib.dump(model_data, local_path)
-
-        # Subir a HDFS con hdfs dfs -put
-        import subprocess
-        subprocess.run(
-            ["hdfs", "dfs", "-put", "-f", local_path, f"{HDFS_MODELS}/xgb_{MODEL_RUN_DATE}.joblib"],
-            check=False
+        pool.execute_write(
+            """UPDATE fact_kuznets
+               SET turning_point_phase=%s, phase_confidence=%s,
+                   investment_score=%s, investment_recommendation=%s
+               WHERE city_sk=%s AND year=%s""",
+            (phase, conf, inv_score, inv_rec, city_sk, year)
         )
-        print(f"  [MODEL] Guardado en {HDFS_MODELS}/xgb_{MODEL_RUN_DATE}.joblib")
-    except Exception as e:
-        print(f"  [WARN] No se pudo serializar el modelo: {e}")
+
+    print(f"  [FACT_KUZNETS] Fases XGBoost: {len(pdf_predictions)} ciudades x anio actualizadas")
+
+    # Actualizar model_results
+    sql = """
+        INSERT INTO model_results
+            (city_sk, year, month,
+             xgb_predicted_phase, xgb_prob_degradando, xgb_prob_turning,
+             xgb_prob_recuperando, xgb_confidence, xgb_feature_importance,
+             _model_run_date, _pipeline_version)
+        VALUES (%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s)
+        ON DUPLICATE KEY UPDATE
+            xgb_predicted_phase=VALUES(xgb_predicted_phase),
+            xgb_prob_degradando=VALUES(xgb_prob_degradando),
+            xgb_prob_turning=VALUES(xgb_prob_turning),
+            xgb_prob_recuperando=VALUES(xgb_prob_recuperando),
+            xgb_confidence=VALUES(xgb_confidence),
+            xgb_feature_importance=VALUES(xgb_feature_importance),
+            _model_run_date=VALUES(_model_run_date)
+    """
+    # Obtener meses disponibles desde fact_kuznets
+    fk_months = pool.execute_query(
+        "SELECT DISTINCT city_sk, year, month FROM fact_kuznets"
+    )
+    month_map = {}
+    for r in fk_months:
+        key = (r["city_sk"], r["year"])
+        if key not in month_map:
+            month_map[key] = []
+        month_map[key].append(r["month"])
+
+    rows = []
+    for _, row in pdf_predictions.iterrows():
+        city_sk = safe_int(row["city_sk"])
+        year    = safe_int(row["year"])
+        phase   = str(row.get("xgb_predicted_phase", "DEGRADANDO"))
+        conf    = safe_float(row.get("xgb_confidence"))
+        prob_d  = safe_float(row.get("xgb_prob_degradando"))
+        prob_t  = safe_float(row.get("xgb_prob_turning"))
+        prob_r  = safe_float(row.get("xgb_prob_recuperando"))
+        fi_json = str(row.get("xgb_feature_importance", "{}"))
+
+        for month in month_map.get((city_sk, year), [1]):
+            rows.append((
+                city_sk, year, month,
+                phase, prob_d, prob_t, prob_r, conf, fi_json,
+                MODEL_RUN_DATE, MODEL_VERSION,
+            ))
+
+    if rows:
+        pool.execute_many(sql, rows)
+    print(f"  [MODEL_RESULTS] XGBoost: {len(rows)} filas actualizadas")
 
 
 # ==============================================================================
@@ -382,54 +338,45 @@ def save_model(clf, le, feature_cols):
 # ==============================================================================
 def main():
     parser = argparse.ArgumentParser(description="GTP XGBoost Phase Classifier")
-    parser.add_argument("--threshold", type=float, default=0.5,
-                        help="Umbral de confianza (default: 0.5)")
-    parser.add_argument("--test-years", type=int, default=2,
-                        help="Años reservados para test (default: 2)")
+    parser.add_argument("--threshold",  type=float, default=0.5)
+    parser.add_argument("--test-years", type=int,   default=2)
     args = parser.parse_args()
 
     print("=" * 65)
     print("  GTP — MODELO 3: XGBOOST PHASE CLASSIFIER")
-    print(f"  Clases:    {CLASSES}")
-    print(f"  Test años: {args.test_years}")
+    print(f"  Clases: {CLASSES}")
+    print(f"  Test anos: {args.test_years}")
+    print(f"  Fuente: MariaDB Gold (fact_kuznets)")
     print("=" * 65)
 
-    spark = get_spark()
+    pool = get_pool()
 
     # 1. Cargar y etiquetar
-    pdf = load_and_label_data(spark)
+    pdf = load_and_label_data(pool)
     if pdf is None:
-        print("[SKIP] XGBoost omitido: Gold no disponible.")
-        spark.stop()
+        print("[SKIP] XGBoost omitido.")
         return
 
     # 2. Split temporal
     train, test = temporal_split(pdf, args.test_years)
-
     if len(train) < 50:
-        print(f"[ERROR] Solo {len(train)} observaciones en train. Necesitas más datos.")
-        spark.stop()
+        print(f"[ERROR] Solo {len(train)} obs en train. Necesitas mas datos.")
         sys.exit(1)
 
     # 3. Entrenar
-    clf, le, feature_cols = train_xgboost(train, test, args.threshold)
+    clf, le, feature_cols = train_xgboost(train, test)
     if clf is None:
-        spark.stop()
         sys.exit(1)
 
-    # 4. Predecir sobre todo el dataset
+    # 4. Prediccion sobre todo el dataset
     pdf_predictions = predict_all(clf, le, feature_cols, pdf)
 
-    # 5. Actualizar Gold
-    update_gold(spark, pdf_predictions)
-
-    # 6. Guardar modelo
-    save_model(clf, le, feature_cols)
+    # 5. Actualizar MariaDB
+    update_mariadb(pool, pdf_predictions)
 
     print("\n" + "=" * 65)
     print("  XGBOOST CLASSIFIER COMPLETADO")
     print("=" * 65)
-    spark.stop()
 
 
 if __name__ == "__main__":

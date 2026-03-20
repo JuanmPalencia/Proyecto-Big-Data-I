@@ -1,153 +1,242 @@
-import os
+"""
+Sentinel-5p_extract.py — GTP (Green Turning Point)
+Extrae NO2 troposférico mensual medio por ciudad usando Google Earth Engine.
+
+Estrategia: reduceRegion en GEE sobre S5P OFFL L3_NO2 (sin descargas).
+Dataset: COPERNICUS/S5P/OFFL/L3_NO2
+  - tropospheric_NO2_column_number_density  (mol/m²)
+  - Filtro de calidad: cloud_fraction < 0.3
+
+Cobertura temporal: 2018–presente
+  Sentinel-5P operativo desde abril 2018 (colección OFFL fiable desde 2018-07).
+  Pre-2018: NO2 no disponible en GEE (OMI/Aura no está en el catálogo público).
+  El gap 2004–2017 se gestiona en Silver como LEFT JOIN → columna no2_mean = NULL.
+
+Output: DatosProcesados/s5p.csv
+Columnas: City, Year, Month, NO2_Mean
+
+Idempotente: reanuda desde donde se quedó si se interrumpe.
+
+Ejecución:
+  python Sentinel-5p_extract.py
+  python Sentinel-5p_extract.py --workers 10
+"""
+
+import csv
 import time
+import random
 import calendar
 import datetime
-import requests
-import ee
+import threading
+import argparse
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import config  # Importamos la configuración para no repetir el diccionario de ciudades
 
-# --- CONFIGURACIÓN DE DESCARGA ---
+import ee
+import config
+
+# ==============================================================================
+# CONFIGURACIÓN
+# ==============================================================================
 GOOGLE_PROJECT = "gtpuem23"
-START_YEAR = 2018          # Sentinel-5P empezó a operar fiablemente en 2018
-OUTPUT_DIR = config.DATA_DIR / "sentinel5p"
+START_YEAR     = 2018      # S5P OFFL fiable desde 2018; pre-2018 = NULL en Silver
+SCALE_M        = 1_113     # ~1km cuadrado (resolución nativa S5P ~3.5×7 km)
+MAX_WORKERS    = 10
+MAX_RETRIES    = 4
+BUFFER_M       = 20_000    # 20 km buffer alrededor del centroide
 
-# Resolución espacial: 
-# Sentinel-5P tiene una resolución nativa de ~3.5x7km. 
-# Re-muestreamos a ~1km (1113.2m) para tener píxeles cuadrados y manejables.
-SCALE_M = 1113.2 
-MAX_WORKERS = 10  # Hilos paralelos (ajustar según tu ancho de banda)
+OUTPUT_CSV  = config.INPUT_DIR_PROCESSED / "s5p.csv"
+CSV_COLUMNS = ["City", "Year", "Month", "NO2_Mean"]
 
-# --- INICIALIZACIÓN GEE ---
+_csv_lock = threading.Lock()
+
+# ==============================================================================
+# INICIALIZACIÓN GEE
+# ==============================================================================
 try:
-    # Iniciamos la conexión con los servidores de Google
     ee.Initialize(project=GOOGLE_PROJECT)
-    print("[INFO] Conexión exitosa con Google Earth Engine.")
+    print("[INFO] GEE inicializado correctamente.")
 except Exception as e:
-    raise RuntimeError(f"Fallo de autenticación GEE. Ejecuta 'earthengine authenticate' primero.\nError: {e}")
+    raise RuntimeError(
+        f"Fallo de autenticación GEE: {e}\n"
+        "Ejecuta: earthengine authenticate"
+    )
 
-def mask_clouds(image):
-    """
-    Filtro de Calidad: Las nubes bloquean la visión del sensor troposférico.
-    Esta función elimina cualquier píxel con más del 30% de cobertura nubosa
-    para evitar falsos positivos en la lectura de NO2.
-    """
-    cloud_frac = image.select('cloud_fraction')
-    return image.updateMask(cloud_frac.lt(0.3))
 
-def get_monthly_composite(lat, lon, year, month, radius_km=20):
+# ==============================================================================
+# IDEMPOTENCIA — cargar progreso previo
+# ==============================================================================
+def load_done(csv_path: Path, retry_missing: bool = False) -> set:
     """
-    Crea una imagen resumen del mes para una ciudad específica.
-    
-    Lógica:
-    1. Define el área de interés (punto central + radio).
-    2. Busca todas las pasadas del satélite en ese mes.
-    3. Elimina nubes.
-    4. Calcula la MEDIA de los valores válidos (reducción temporal).
+    Devuelve el conjunto de (City, Year, Month) ya procesados.
+    - retry_missing=True: excluye filas sin datos (NO2_Mean vacío) → se reintentarán.
     """
-    # Calculamos el último día del mes automáticamente
+    if not csv_path.exists():
+        return set()
+    done = set()
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            try:
+                if retry_missing and not row.get("NO2_Mean"):
+                    continue
+                done.add((row["City"], int(row["Year"]), int(row["Month"])))
+            except (KeyError, ValueError):
+                pass
+    return done
+
+
+def init_csv(csv_path: Path):
+    """Crea el directorio y la cabecera del CSV si no existe."""
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    if not csv_path.exists():
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(CSV_COLUMNS)
+
+
+def append_row(csv_path: Path, row: tuple):
+    """Escritura thread-safe de una fila al CSV."""
+    with _csv_lock:
+        with open(csv_path, "a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(row)
+
+
+# ==============================================================================
+# WORKER — procesa una ciudad×mes
+# ==============================================================================
+def process_city_month(task: tuple):
+    """
+    Calcula NO2_Mean (mol/m²) para una ciudad y un mes.
+    Filtra nubes con cloud_fraction < 0.3, luego media mensual + reduceRegion.
+
+    Retorna:
+      - tuple (City, Year, Month, NO2_Mean) si OK
+      - str con prefijo [WARN] si no hay imágenes válidas
+      - str con prefijo [ERROR] si hay fallo GEE
+    """
+    city, (lat, lon), year, month = task
+
     last_day = calendar.monthrange(year, month)[1]
-    start_date = f"{year}-{month:02d}-01"
-    end_date = f"{year}-{month:02d}-{last_day}"
+    start    = f"{year}-{month:02d}-01"
+    end      = f"{year}-{month:02d}-{last_day}"
+    roi      = ee.Geometry.Point([lon, lat]).buffer(BUFFER_M).bounds()
 
-    # Geometría: Un círculo alrededor del centro de la ciudad
-    point = ee.Geometry.Point([lon, lat])
-    roi = point.buffer(radius_km * 1000).bounds()
+    for attempt in range(MAX_RETRIES):
+        try:
+            col = (
+                ee.ImageCollection("COPERNICUS/S5P/OFFL/L3_NO2")
+                .filterBounds(roi)
+                .filterDate(start, end)
+                .map(lambda img: img.updateMask(
+                    img.select("cloud_fraction").lt(0.3)
+                ))
+                .select("tropospheric_NO2_column_number_density")
+            )
 
-    # Seleccionamos la colección 'OFFL' (Offline).
-    # Es preferible a la 'NRTI' (Real Time) para estudios históricos porque
-    # tiene mejores calibraciones científicas post-procesamiento.
-    collection = (ee.ImageCollection('COPERNICUS/S5P/OFFL/L3_NO2')
-                  .filterBounds(roi)
-                  .filterDate(start_date, end_date)
-                  .map(mask_clouds)
-                  .select('tropospheric_NO2_column_number_density'))
+            # Media mensual de todos los pases del satélite
+            img = col.mean().clip(roi)
 
-    # Si hubo muchas nubes y no hay datos, devolvemos None
-    if collection.size().getInfo() == 0:
-        return None
+            stats = img.reduceRegion(
+                reducer=ee.Reducer.mean(),
+                geometry=roi,
+                scale=SCALE_M,
+                maxPixels=1e8,
+                bestEffort=True,
+            ).getInfo()
 
-    # Devolvemos la media mensual recortada a la zona de interés
-    return collection.mean().clip(roi)
+            no2 = stats.get("tropospheric_NO2_column_number_density")
 
-def process_task(task_args):
-    """
-    Worker: Se encarga de pedir la URL a Google y descargar el archivo.
-    """
-    city, (lat, lon), year, month, out_dir = task_args
-    
-    filename = f"{city}_NO2_{year}-{month:02d}"
-    # Guardamos cada ciudad en su propia carpeta para ser ordenados
-    city_dir = out_dir / city
-    final_path = city_dir / f"{filename}.zip"
-    done_path  = city_dir / f"{filename}.done"
+            if no2 is None:
+                return f"[WARN] {city} {year}-{month:02d}: sin datos S5P (nubes o sin pasadas)"
 
-    # Idempotencia: Si ya existe el ZIP o ya fue convertido a CSV (.done), saltar
-    if final_path.exists() or done_path.exists():
-        return None 
+            return (city, year, month, round(no2, 10))
 
-    try:
-        # 1. Procesamiento en la nube (GEE)
-        img = get_monthly_composite(lat, lon, year, month)
-        if not img:
-            return f"[WARN] {city} {year}-{month}: Cielo cubierto o sin datos."
+        except ee.EEException as e:
+            if attempt < MAX_RETRIES - 1:
+                wait = (2 ** attempt) + random.uniform(0.5, 2.0)
+                time.sleep(wait)
+            else:
+                return f"[ERROR-GEE] {city} {year}-{month:02d}: {e}"
+        except Exception as e:
+            return f"[ERROR] {city} {year}-{month:02d}: {e}"
 
-        # 2. Generar URL de descarga
-        # Pedimos a GEE que prepare un ZIP con el GeoTIFF
-        url = img.getDownloadURL({
-            'name': filename,
-            'scale': SCALE_M,
-            'crs': 'EPSG:3857', # Proyección Web Mercator (estándar mapas web)
-            'filePerBand': False
-        })
+    return f"[ERROR] {city} {year}-{month:02d}: máx reintentos alcanzados"
 
-        # 3. Descarga física al disco duro
-        r = requests.get(url, stream=True, timeout=60)
-        if r.status_code == 200:
-            city_dir.mkdir(parents=True, exist_ok=True)
-            with open(final_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=1024*1024):
-                    f.write(chunk)
-            return f"[OK] Descargado: {filename}"
-        else:
-            return f"[ERROR] HTTP {r.status_code} al descargar {filename}"
 
-    except Exception as e:
-        return f"[ERROR] Excepción GEE en {filename}: {e}"
-
+# ==============================================================================
+# MAIN
+# ==============================================================================
 def main():
-    print(f"--- INICIANDO DESCARGA MASIVA SENTINEL-5P ---")
-    print(f"Proyecto GEE: {GOOGLE_PROJECT}")
-    print(f"Hilos paralelos: {MAX_WORKERS}")
-    
-    tasks = []
-    now = datetime.datetime.now()
-    
-    # Construimos la cola de trabajo:
-    # Todas las ciudades x Todos los meses desde 2018 hasta hoy
-    for city, coords in config.EURO_FUAS.items():
-        for year in range(START_YEAR, now.year + 1):
-            for month in range(1, 13):
-                # No intentamos descargar meses futuros
-                if year == now.year and month > now.month: 
-                    break
-                
-                tasks.append((city, coords, year, month, OUTPUT_DIR))
-    
-    print(f"Total de imágenes a procesar: {len(tasks)}")
-    print("Comenzando ejecución paralela...")
+    parser = argparse.ArgumentParser(
+        description="GTP S5P — NO2 troposférico mensual vía GEE"
+    )
+    parser.add_argument("--workers",       type=int,  default=MAX_WORKERS,
+                        help=f"Hilos paralelos (default: {MAX_WORKERS})")
+    parser.add_argument("--retry-missing", action="store_true",
+                        help="Reintentar meses sin datos (nubosos/sin pasadas) del CSV anterior")
+    args = parser.parse_args()
 
-    # Usamos ThreadPoolExecutor para descargar varias imágenes a la vez
-    # GEE aguanta bien la concurrencia, el límite suele ser tu red.
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = [executor.submit(process_task, t) for t in tasks]
-        
-        for i, future in enumerate(as_completed(futures)):
-            res = future.result()
-            if res: 
-                print(f"[{i+1}/{len(tasks)}] {res}")
+    print("=" * 60)
+    print("  GTP — EXTRACCIÓN NO2 (Sentinel-5P OFFL L3)")
+    print(f"  Colección:  COPERNICUS/S5P/OFFL/L3_NO2")
+    print(f"  Cobertura:  {START_YEAR}–presente (pre-{START_YEAR} = NULL en Silver)")
+    print(f"  Escala:     {SCALE_M}m | Buffer: {BUFFER_M//1000}km")
+    print(f"  Hilos:      {args.workers}")
+    print(f"  Output:     {OUTPUT_CSV}")
+    print("=" * 60)
 
-    print("\n[FIN] Todas las descargas completadas.")
+    init_csv(OUTPUT_CSV)
+    done = load_done(OUTPUT_CSV, retry_missing=args.retry_missing)
+    print(f"  Registros ya procesados: {len(done):,}")
+    if args.retry_missing:
+        print("  [retry-missing] Se reintentarán meses sin datos previos.")
+
+    now   = datetime.datetime.now()
+    tasks = [
+        (city, coords, year, month)
+        for city, coords in config.EURO_FUAS.items()
+        for year in range(START_YEAR, now.year + 1)
+        for month in range(1, 13)
+        if not (year == now.year and month > now.month)
+        and (city, year, month) not in done
+    ]
+
+    print(f"  Pendientes:  {len(tasks):,} ciudad×mes\n")
+
+    ok = warn = err = 0
+
+    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        futures = {executor.submit(process_city_month, t): t for t in tasks}
+
+        for i, future in enumerate(as_completed(futures), 1):
+            result = future.result()
+            task   = futures[future]
+            city, _, year, month = task
+
+            if isinstance(result, tuple):
+                append_row(OUTPUT_CSV, result)
+                ok += 1
+            elif isinstance(result, str) and "[WARN]" in result:
+                # Sin pasadas válidas ese mes → escribir fila vacía para no reintentar
+                append_row(OUTPUT_CSV, (city, year, month, ""))
+                warn += 1
+                if warn % 200 == 0:
+                    print(result)
+            else:
+                err += 1
+                print(result)
+
+            if i % 1000 == 0:
+                print(f"  [{i:,}/{len(tasks):,}] OK={ok:,} | WARN={warn:,} | ERR={err:,}")
+
+    print()
+    print("=" * 60)
+    print(f"  FIN — S5P NO2 extraído")
+    print(f"  Filas escritas:    {ok:,}")
+    print(f"  Sin datos:         {warn:,}")
+    print(f"  Errores GEE:       {err:,}")
+    print(f"  Output: {OUTPUT_CSV}")
+    print("=" * 60)
+
 
 if __name__ == "__main__":
     main()

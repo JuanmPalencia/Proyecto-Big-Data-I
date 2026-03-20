@@ -137,6 +137,7 @@ PASO 12: Flask API → ranking + detalle de ciudad para dashboards
 
 ### 4.1 Flujo de datos end-to-end
 
+**Lorca (producción — cluster YARN distribuido):**
 ```
 Fuentes externas
   GEE (Sentinel-2, S5P) + EEA (HRL) + Eurostat + OECD + INE + YFinance + InvestEU
@@ -170,6 +171,36 @@ Fuentes externas
          ▼ Power BI / Tableau / Grafana / Web dashboard
 ```
 
+**Docker (local/dev — reemplaza HDFS con MariaDB DW directa):**
+```
+CSVs locales en Docker/ETL/script/data/DatosProcesados/
+         │
+         ▼ bronze_ingest.py (Spark local[4])
+   MariaDB bd_rvm_gtp — tablas bronze_* (Parquet en /tmp/hdfs_sim/)
+         │
+         ▼ silver_transform.py (Spark local[4])
+   MariaDB bd_rvm_gtp — Star Schema DW:
+   dim_city, dim_date, dim_source, dim_company
+   fact_environmental, fact_economic, fact_policy, fact_financial
+   (PK = city_sk + year + month, granularidad mensual)
+         │
+         ▼ gold_build.py (Python puro — lee de MariaDB Silver, escribe Gold)
+   MariaDB bd_rvm_gtp — fact_kuznets, city_ranking, ekc_parameters
+   (PK = (city_sk, year, month); cluster_sk DEFAULT 0 como placeholder pre-ML)
+         │
+         ▼ clustering → ekc → xgboost → prophet (Python puro)
+   MariaDB bd_rvm_gtp — fact_kuznets, city_ranking, model_results completos
+   (cluster_sk actualizado, resultados ML rellenos — 29.602 filas/mes)
+         │
+         ▼ Flask API  Docker/Web/app.py  → :5000
+```
+
+> Diferencia arquitectural clave: en Docker, **silver_transform.py escribe el Star Schema
+> directamente en MariaDB** (usando mysql.connector). No hay HDFS real. El gold_build.py
+> lee de MariaDB Silver via SQL y escribe Gold en MariaDB. El schema activo es
+> `mariadb_dw_ddl.sql` (granularidad mensual, city_sk como PK surrogate), distinto del
+> schema de serving (`001-init.sql`, anual, legacy).
+
 ### 4.2 Stack tecnológico
 
 | Capa | Tecnología | Versión | Rol |
@@ -187,6 +218,7 @@ Fuentes externas
 
 ### 4.3 Ejecución
 
+**Lorca (producción):**
 ```bash
 # Un único comando para todo el pipeline:
 python Lorca/ETL/script/run_all.py
@@ -196,6 +228,27 @@ python run_all.py --skip-bbdd          # Solo ETL
 python run_all.py --only-bbdd          # Solo BBDD + ML
 python run_all.py --only-bbdd --bbdd-args "--only-models"  # Solo reentrenar ML
 python run_all.py --dry-run            # Mostrar sin ejecutar
+```
+
+**Docker (local/dev):**
+```bash
+cd Docker/
+
+# 1. Levantar infraestructura (MariaDB + Hive metastore simulado)
+docker compose up -d
+
+# 2. Autenticar Google Earth Engine (solo la primera vez)
+docker compose run --rm etl earthengine authenticate
+
+# 3. Ejecutar pipeline completo (ETL + Bronze + Silver + Gold + ML + Flask)
+docker compose --profile etl run --rm etl
+
+# 4. Levantar API Flask en segundo plano
+docker compose --profile api up -d api
+# → http://localhost:5000/api/ranking
+
+# Ver logs en tiempo real:
+docker compose logs -f etl
 ```
 
 ---
@@ -1492,12 +1545,30 @@ El CSV maestro generado por `merge.py` (input de `bronze_ingest.py`) contiene:
 | 2026-03-11 | `clustering.py` | Ternary DataFrameWriter `(...).parquet(...)` no verificaba columna `country` antes de `partitionBy` | Reemplazar con `if "year" in cols and "country" in cols` explícito |
 | 2026-03-11 | `xgboost_classifier.py` | Mismo patrón ternario que clustering.py | Mismo fix |
 | 2026-03-11 | `YFinance_extract.py` | Granularidad anual → señal financiera pobre | Migrar a mensual (`groupby([year, month])`, `std × √21`) |
+| 2026-03-18/19 | `Docker/BBDD/gold_build.py` | Apuntaba al schema de serving (`001-init.sql`, anual, PK=(city_code,year)) pero el schema activo es DW mensual (`mariadb_dw_ddl.sql`, PK=(city_sk,year,month)) → `Unknown column` en INSERT | Reescritura completa: PK=(city_sk,year,month), `cluster_sk=0` placeholder, 50 columnas |
+| 2026-03-18/19 | `Docker/BBDD/gold_build.py` | `safe_str(v)` llamaba `str(v)` sin comprobar NaN → `str(nan)='nan'` insertado literalmente en MySQL → `Unknown column 'nan' in 'VALUES'` | Añadir `if isinstance(v, float) and not math.isfinite(v): return None` antes de `str(v)` |
+| 2026-03-18/19 | `Docker/BBDD/gold_build.py` | `top_ticker`/`top_company` pasaban pandas NaN directamente a la tupla sin ningún safe wrapper | Envolver con `safe_str()` en la construcción de la tupla |
+| 2026-03-18/19 | `Docker/BBDD/gold_build.py` | Tuplas con `float('nan')` o `float('inf')` podían llegar a `execute_many` por paths no cubiertos | Añadir `sanitize_row(t)` en `batch_upsert()` como red de seguridad final: reemplaza todo float no-finito por `None` |
+| 2026-03-18/19 | `Docker/BBDD/schemas/mariadb_dw_ddl.sql` | `fact_kuznets.cluster_sk BIGINT NOT NULL` sin DEFAULT → INSERTs de gold_build que no incluyen `cluster_sk` (pre-clustering) fallaban | Añadir `DEFAULT 0` al DDL: `cluster_sk BIGINT NOT NULL DEFAULT 0` |
+| 2026-03-18/19 | `Docker/BBDD/schemas/mariadb_dw_ddl.sql` | `model_results.cluster_sk` y `model_results.date_sk` ambos `NOT NULL` sin DEFAULT → INSERTs de los scripts ML que omiten estas FKs pre-clustering fallaban | `ALTER TABLE model_results MODIFY COLUMN cluster_sk BIGINT NOT NULL DEFAULT 0; ... date_sk INT NOT NULL DEFAULT 0` |
 
 ---
 
 ## 22. Pendiente — tareas fuera del código
 
-El código está completo. Lo que falta es ejecución e infraestructura en Lorca:
+### 22.1 Docker (local/dev)
+
+| Tarea | Estado |
+|-------|--------|
+| Pipeline Bronze → Silver → Gold → ML → Flask end-to-end | ✅ Completado (2026-03-19) |
+| gold_build.py reescrito para schema DW mensual | ✅ Completado |
+| NaN sanitization en gold_build.py (`safe_str` + `sanitize_row`) | ✅ Completado |
+| `mariadb_dw_ddl.sql` — DEFAULT 0 en `cluster_sk`/`date_sk` | ✅ Completado |
+| Resultado: 29.602 filas en fact_kuznets, city_ranking, model_results | ✅ Verificado |
+| Resultado: K=3 clusters, Silhouette=0.2480, 658 ciudades-mes TURNING en 2023 | ✅ Verificado |
+| Fix `Lorca/Web/app.py` — usa psycopg2 para MariaDB → migrar a PyMySQL | ⏳ Pendiente (Docker ya corregido) |
+
+### 22.2 Lorca (producción — cluster UEM)
 
 | Tarea | Comando clave | Estado |
 |-------|---------------|--------|

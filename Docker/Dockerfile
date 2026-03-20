@@ -16,9 +16,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copiar código del proyecto
-COPY ETL  /app/ETL
-COPY BBDD /app/BBDD
-COPY Web  /app/Web
+COPY ETL       /app/ETL
+COPY BBDD      /app/BBDD
+COPY Web       /app/Web
+COPY config.ini /app/config.ini
 
 # Config Hadoop/Hive que PySpark lee via HADOOP_CONF_DIR / HIVE_CONF_DIR
 COPY docker/conf /app/conf

@@ -1,25 +1,25 @@
 """
 Sentinel-5p_extract.py — GTP (Green Turning Point)
-Extrae estadísticas NO2 mensuales por ciudad usando Google Earth Engine.
+Extrae NO2 troposférico mensual medio por ciudad usando Google Earth Engine.
 
-Estrategia: reduceRegion en GEE (sin descargar GeoTIFFs).
-GEE calcula la media mensual de NO2 troposférico, filtra nubes y devuelve
-un único valor numérico por ciudad×mes — sin descarga de imágenes.
+Estrategia: reduceRegion en GEE sobre S5P OFFL L3_NO2 (sin descargas).
+Dataset: COPERNICUS/S5P/OFFL/L3_NO2
+  - tropospheric_NO2_column_number_density  (mol/m²)
+  - Filtro de calidad: cloud_fraction < 0.3
 
-Datos:
-  Colección: COPERNICUS/S5P/OFFL/L3_NO2 (versión Offline, mejor calidad)
-  Banda:     tropospheric_NO2_column_number_density → renombrada a NO2
-  Unidades:  mol/m²  (rango típico ciudades europeas: 5e-5 a 2e-4)
-  Filtro:    cloud_fraction < 0.3
+Cobertura temporal: 2018–presente
+  Sentinel-5P operativo desde abril 2018 (colección OFFL fiable desde 2018-07).
+  Pre-2018: NO2 no disponible en GEE (OMI/Aura no está en el catálogo público).
+  El gap 2004–2017 se gestiona en Silver como LEFT JOIN → columna no2_mean = NULL.
 
 Output: DatosProcesados/s5p.csv
-Columnas: City, Year, Month, NO2_Mean, NO2_Std, pixel_count
+Columnas: City, Year, Month, NO2_Mean
 
 Idempotente: reanuda desde donde se quedó si se interrumpe.
 
 Ejecución:
   python Sentinel-5p_extract.py
-  python Sentinel-5p_extract.py --start-year 2020 --workers 6
+  python Sentinel-5p_extract.py --workers 10
 """
 
 import csv
@@ -39,14 +39,14 @@ import config
 # CONFIGURACIÓN
 # ==============================================================================
 GOOGLE_PROJECT = "gtpuem23"
-START_YEAR     = 2018         # S5P OFFL fiable desde 2018
-SCALE_M        = 1113         # ~1km, resolución nativa de S5P redondeada
-MAX_WORKERS    = 8
+START_YEAR     = 2018      # S5P OFFL fiable desde 2018; pre-2018 = NULL en Silver
+SCALE_M        = 1_113     # ~1km cuadrado (resolución nativa S5P ~3.5×7 km)
+MAX_WORKERS    = 10
 MAX_RETRIES    = 4
-BUFFER_M       = 20_000       # radio buffer alrededor del centroide (20 km)
+BUFFER_M       = 20_000    # 20 km buffer alrededor del centroide
 
 OUTPUT_CSV  = config.INPUT_DIR_PROCESSED / "s5p.csv"
-CSV_COLUMNS = ["City", "Year", "Month", "NO2_Mean", "NO2_Std", "pixel_count"]
+CSV_COLUMNS = ["City", "Year", "Month", "NO2_Mean"]
 
 _csv_lock = threading.Lock()
 
@@ -64,16 +64,21 @@ except Exception as e:
 
 
 # ==============================================================================
-# IDEMPOTENCIA
+# IDEMPOTENCIA — cargar progreso previo
 # ==============================================================================
-def load_done(csv_path: Path) -> set:
-    """Devuelve el conjunto de (City, Year, Month) ya escritos en el CSV."""
+def load_done(csv_path: Path, retry_missing: bool = False) -> set:
+    """
+    Devuelve el conjunto de (City, Year, Month) ya procesados.
+    - retry_missing=True: excluye filas sin datos (NO2_Mean vacío) → se reintentarán.
+    """
     if not csv_path.exists():
         return set()
     done = set()
     with open(csv_path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             try:
+                if retry_missing and not row.get("NO2_Mean"):
+                    continue
                 done.add((row["City"], int(row["Year"]), int(row["Month"])))
             except (KeyError, ValueError):
                 pass
@@ -96,40 +101,17 @@ def append_row(csv_path: Path, row: tuple):
 
 
 # ==============================================================================
-# GEE — COLECCIÓN NO2 CON FILTRO DE NUBES
-# ==============================================================================
-def get_no2_collection(roi, start_date: str, end_date: str):
-    """
-    Colección Sentinel-5P OFFL NO2 con filtro de nubosidad y banda renombrada.
-    Filtramos cloud_fraction < 0.3 para evitar falsos positivos.
-    La banda se renombra a 'NO2' para simplificar los keys de reduceRegion.
-    """
-    def filter_clouds(image):
-        cloud_frac = image.select('cloud_fraction')
-        return image.updateMask(cloud_frac.lt(0.3))
-
-    return (
-        ee.ImageCollection('COPERNICUS/S5P/OFFL/L3_NO2')
-        .filterBounds(roi)
-        .filterDate(start_date, end_date)
-        .map(filter_clouds)
-        .select('tropospheric_NO2_column_number_density')
-        .map(lambda img: img.rename('NO2'))
-    )
-
-
-# ==============================================================================
 # WORKER — procesa una ciudad×mes
 # ==============================================================================
 def process_city_month(task: tuple):
     """
-    Calcula NO2_Mean, NO2_Std y pixel_count para una ciudad y un mes.
-    Usa GEE reduceRegion: sin descargar ningún archivo.
+    Calcula NO2_Mean (mol/m²) para una ciudad y un mes.
+    Filtra nubes con cloud_fraction < 0.3, luego media mensual + reduceRegion.
 
     Retorna:
-      - tuple (City, Year, Month, NO2_Mean, NO2_Std, pixel_count) si OK
-      - str con prefijo [WARN] si no hay datos válidos ese mes
-      - str con prefijo [ERROR] si hay fallo de GEE o de red
+      - tuple (City, Year, Month, NO2_Mean) si OK
+      - str con prefijo [WARN] si no hay imágenes válidas
+      - str con prefijo [ERROR] si hay fallo GEE
     """
     city, (lat, lon), year, month = task
 
@@ -140,37 +122,33 @@ def process_city_month(task: tuple):
 
     for attempt in range(MAX_RETRIES):
         try:
-            col = get_no2_collection(roi, start, end)
-            img = col.mean().clip(roi)
-
-            # reduceRegion: media + desviación estándar + recuento de píxeles
-            reducer = (
-                ee.Reducer.mean()
-                .combine(ee.Reducer.stdDev(),  sharedInputs=True)
-                .combine(ee.Reducer.count(),   sharedInputs=True)
+            col = (
+                ee.ImageCollection("COPERNICUS/S5P/OFFL/L3_NO2")
+                .filterBounds(roi)
+                .filterDate(start, end)
+                .map(lambda img: img.updateMask(
+                    img.select("cloud_fraction").lt(0.3)
+                ))
+                .select("tropospheric_NO2_column_number_density")
             )
 
+            # Media mensual de todos los pases del satélite
+            img = col.mean().clip(roi)
+
             stats = img.reduceRegion(
-                reducer=reducer,
+                reducer=ee.Reducer.mean(),
                 geometry=roi,
                 scale=SCALE_M,
                 maxPixels=1e8,
-                bestEffort=True
+                bestEffort=True,
             ).getInfo()
 
-            no2_mean = stats.get('NO2_mean')
-            no2_std  = stats.get('NO2_stdDev', 0.0)
-            n_pixels = stats.get('NO2_count',  0)
+            no2 = stats.get("tropospheric_NO2_column_number_density")
 
-            if no2_mean is None:
-                return f"[WARN] {city} {year}-{month:02d}: sin píxeles válidos"
+            if no2 is None:
+                return f"[WARN] {city} {year}-{month:02d}: sin datos S5P (nubes o sin pasadas)"
 
-            return (
-                city, year, month,
-                round(no2_mean, 10),       # mol/m² — necesita precisión alta
-                round(no2_std or 0.0, 10),
-                int(n_pixels or 0),
-            )
+            return (city, year, month, round(no2, 10))
 
         except ee.EEException as e:
             if attempt < MAX_RETRIES - 1:
@@ -189,30 +167,34 @@ def process_city_month(task: tuple):
 # ==============================================================================
 def main():
     parser = argparse.ArgumentParser(
-        description="GTP Sentinel-5P NO2 — extracción vía GEE reduceRegion"
+        description="GTP S5P — NO2 troposférico mensual vía GEE"
     )
-    parser.add_argument("--start-year", type=int, default=START_YEAR,
-                        help=f"Año de inicio (default: {START_YEAR})")
-    parser.add_argument("--workers", type=int, default=MAX_WORKERS,
+    parser.add_argument("--workers",       type=int,  default=MAX_WORKERS,
                         help=f"Hilos paralelos (default: {MAX_WORKERS})")
+    parser.add_argument("--retry-missing", action="store_true",
+                        help="Reintentar meses sin datos (nubosos/sin pasadas) del CSV anterior")
     args = parser.parse_args()
 
     print("=" * 60)
-    print("  GTP — EXTRACCIÓN NO2 (Sentinel-5P via GEE)")
+    print("  GTP — EXTRACCIÓN NO2 (Sentinel-5P OFFL L3)")
+    print(f"  Colección:  COPERNICUS/S5P/OFFL/L3_NO2")
+    print(f"  Cobertura:  {START_YEAR}–presente (pre-{START_YEAR} = NULL en Silver)")
     print(f"  Escala:     {SCALE_M}m | Buffer: {BUFFER_M//1000}km")
-    print(f"  Hilos:      {args.workers} | Inicio: {args.start_year}")
+    print(f"  Hilos:      {args.workers}")
     print(f"  Output:     {OUTPUT_CSV}")
     print("=" * 60)
 
     init_csv(OUTPUT_CSV)
-    done = load_done(OUTPUT_CSV)
+    done = load_done(OUTPUT_CSV, retry_missing=args.retry_missing)
     print(f"  Registros ya procesados: {len(done):,}")
+    if args.retry_missing:
+        print("  [retry-missing] Se reintentarán meses sin datos previos.")
 
     now   = datetime.datetime.now()
     tasks = [
         (city, coords, year, month)
         for city, coords in config.EURO_FUAS.items()
-        for year in range(args.start_year, now.year + 1)
+        for year in range(START_YEAR, now.year + 1)
         for month in range(1, 13)
         if not (year == now.year and month > now.month)
         and (city, year, month) not in done
@@ -227,11 +209,15 @@ def main():
 
         for i, future in enumerate(as_completed(futures), 1):
             result = future.result()
+            task   = futures[future]
+            city, _, year, month = task
 
             if isinstance(result, tuple):
                 append_row(OUTPUT_CSV, result)
                 ok += 1
             elif isinstance(result, str) and "[WARN]" in result:
+                # Sin pasadas válidas ese mes → escribir fila vacía para no reintentar
+                append_row(OUTPUT_CSV, (city, year, month, ""))
                 warn += 1
                 if warn % 200 == 0:
                     print(result)
@@ -244,9 +230,9 @@ def main():
 
     print()
     print("=" * 60)
-    print(f"  FIN — NO2 extraído")
+    print(f"  FIN — S5P NO2 extraído")
     print(f"  Filas escritas:    {ok:,}")
-    print(f"  Sin datos (nubes): {warn:,}")
+    print(f"  Sin datos:         {warn:,}")
     print(f"  Errores GEE:       {err:,}")
     print(f"  Output: {OUTPUT_CSV}")
     print("=" * 60)

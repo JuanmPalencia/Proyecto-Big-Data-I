@@ -61,6 +61,7 @@ flask-cors
 
 # ── MariaDB / Serving Layer ───────────────────────────────────────────────────
 pymysql
+mysql-connector-python
 SQLAlchemy
 
 # ── Google Earth Engine ───────────────────────────────────────────────────────

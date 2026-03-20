@@ -196,7 +196,7 @@ def main():
     df_pivot = df_final.pivot(index='City', columns='Year', values='Value')
     
     # Rellenamos el rango de años completo
-    full_years = range(2000, 2025)
+    full_years = range(2004, 2025)
     df_pivot = df_pivot.reindex(columns=full_years)
     
     # Interpolación

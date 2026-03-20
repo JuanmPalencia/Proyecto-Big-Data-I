@@ -1,35 +1,20 @@
 """
 ekc_regression.py — GTP (Green Turning Point) | Modelo 2: EKC Panel Regression
-Estima los parámetros de la Curva de Kuznets Ambiental (EKC) por cluster.
+Estima los parametros de la Curva de Kuznets Ambiental (EKC) por cluster.
 
-Ecuación del modelo de panel con efectos fijos:
-  ln(NDVI_it) = α + β₁·ln(GDP_it) + β₂·[ln(GDP_it)]² + μᵢ + λₜ + εᵢₜ
+Ecuacion del modelo de panel con efectos fijos:
+  ln(NDVI_it) = alpha + beta1*ln(GDP_it) + beta2*[ln(GDP_it)]^2 + mu_i + lambda_t + eps_it
 
-Donde:
-  μᵢ = efectos fijos de ciudad (heterogeneidad no observada)
-  λₜ = efectos fijos de tiempo (shocks comunes)
-  β₁ > 0, β₂ < 0  →  curva EKC en U invertida (hipótesis confirmada)
+Turning Point:
+  Y* = exp(-beta1 / 2*beta2)
 
-Turning Point (renta en la que la degradación ambiental se revierte):
-  Y* = exp(−β₁ / 2β₂)
+Lee Silver desde MariaDB (fact_environmental + fact_economic + dim_cluster).
+Actualiza MariaDB:
+  - dim_cluster: SCD-2 con nuevos parametros EKC
+  - fact_kuznets: ekc_beta1, ekc_beta2, ekc_turning_point_y, ekc_shape, gdp_gap_to_turning
 
-Por qué pooled dentro del cluster:
-  Cada ciudad individual tiene ~8 observaciones (2018–2026), insuficientes
-  para estimar un modelo cuadrático con efectos fijos. Haciendo pool dentro
-  del cluster (ej. 50 ciudades × 8 años = 400 obs), tenemos suficiente
-  potencia estadística para identificar la forma de la curva.
-
-Librerías:
-  - linearmodels (PanelOLS) para efectos fijos de dos vías
-  - pandas / numpy para la preparación de datos
-  - Spark solo para leer/escribir (los datos caben en RAM por cluster)
-
-Output:
-  - Actualiza Gold ekc_parameters con β₁, β₂, Y*, R², AIC, etc.
-  - Actualiza fact_kuznets con turning_point, ekc_shape, gdp_gap_to_turning
-
-Ejecución:
-  spark-submit --master yarn models/ekc_regression.py [--year YYYY]
+Ejecucion:
+  python models/ekc_regression.py [--clusters 0 1 2]
 """
 
 import sys
@@ -43,101 +28,93 @@ from pathlib import Path
 
 warnings.filterwarnings("ignore")
 
-from pyspark.sql import SparkSession
-from pyspark.sql import functions as F
-from pyspark.sql.types import (
-    StructType, StructField, StringType, DoubleType,
-    IntegerType, BooleanType, LongType
-)
-
 # ==============================================================================
-# CONFIGURACIÓN
+# CONFIGURACION
 # ==============================================================================
-HDFS_SILVER = "hdfs:///user/gtp/silver"
-HDFS_GOLD   = "hdfs:///user/gtp/gold"
+CONFIG_FILE   = str(Path(__file__).resolve().parent.parent.parent / "config.ini")
+MODEL_VERSION = "1.0"
+MODEL_RUN_DATE = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+MODEL_TS       = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-MODEL_VERSION   = "1.0"
-MODEL_RUN_DATE  = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-MODEL_TS        = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-# Mínimo de observaciones por cluster para estimar la regresión
 MIN_OBS_PER_CLUSTER = 30
 
-# ==============================================================================
-# SPARK
-# ==============================================================================
-def get_spark():
-    return (
-        SparkSession.builder
-        .appName("GTP_EKC_Regression")
-        .config("spark.sql.shuffle.partitions", "50")
-        .config("spark.sql.parquet.compression.codec", "snappy")
-        .enableHiveSupport()
-        .getOrCreate()
-    )
 
 # ==============================================================================
-# CARGA DE DATOS
-# Lee fact_kuznets desde Gold (ya tiene cluster_id del paso anterior)
+# DB POOL
 # ==============================================================================
-def load_panel_data(spark):
-    print("  Cargando datos de panel desde Gold fact_kuznets ...")
+def get_pool():
+    bbdd_dir = str(Path(__file__).resolve().parent.parent)
+    if bbdd_dir not in sys.path:
+        sys.path.insert(0, bbdd_dir)
+    from db_pool import MariaDBPool
+    return MariaDBPool(config_file=CONFIG_FILE)
 
+
+def safe_float(v):
+    if v is None:
+        return None
     try:
-        fk = spark.read.parquet(f"{HDFS_GOLD}/fact_kuznets")
-    except Exception as e:
-        print(f"[SKIP] fact_kuznets no disponible en Gold (ekc): {e}")
+        f = float(v)
+        return None if f != f else f
+    except Exception:
         return None
 
-    # Columnas necesarias para EKC
-    needed = ["city_code", "city_name", "country_code", "year",
-              "ndvi_mean", "ln_gdp_pps", "ln_gdp_pps_sq",
-              "gdp_pps_per_capita", "cluster_id"]
 
-    existing = [c for c in needed if c in fk.columns]
-    df = fk.select(existing).filter(
-        F.col("ndvi_mean").isNotNull() &
-        F.col("ln_gdp_pps").isNotNull() &
-        F.col("cluster_id").isNotNull()
-    )
+# ==============================================================================
+# CARGA DE DATOS DESDE MARIADB
+# Lee fact_kuznets (ya tiene cluster_id asignado por clustering.py)
+# Usa datos mensuales: agrega a anual por ciudad para la regresion de panel
+# ==============================================================================
+def load_panel_data(pool):
+    print("  Cargando datos de panel desde MariaDB ...")
 
-    # Convertir a pandas (los datos por cluster caben en RAM: ~2000 filas máx)
-    pdf = df.toPandas()
-    print(f"  Panel: {len(pdf):,} observaciones ciudad×año")
-    print(f"  Clusters disponibles: {sorted(pdf['cluster_id'].unique())}")
+    rows = pool.execute_query("""
+        SELECT fk.city_sk, dc.city_code, dc.country_code,
+               fk.year,
+               AVG(fk.ndvi_mean)         AS ndvi_mean,
+               AVG(fk.ln_gdp_pps)        AS ln_gdp_pps,
+               AVG(fk.ln_gdp_pps_sq)     AS ln_gdp_pps_sq,
+               AVG(fk.gdp_pps_per_capita) AS gdp_pps_per_capita,
+               MAX(fk.cluster_id)        AS cluster_id
+        FROM fact_kuznets fk
+        JOIN dim_city dc ON fk.city_sk = dc.city_sk
+        WHERE fk.ndvi_mean IS NOT NULL
+          AND fk.ln_gdp_pps IS NOT NULL
+          AND fk.cluster_id IS NOT NULL
+        GROUP BY fk.city_sk, dc.city_code, dc.country_code, fk.year
+    """)
+
+    if not rows:
+        print("  [SKIP] Sin datos en fact_kuznets con cluster_id.")
+        return None
+
+    pdf = pd.DataFrame(rows)
+    pdf["cluster_id"] = pd.to_numeric(pdf["cluster_id"], errors="coerce").astype("Int64")
+    print(f"  Panel: {len(pdf):,} obs ciudad x anio")
+    print(f"  Clusters: {sorted(pdf['cluster_id'].dropna().unique())}")
     return pdf
 
 
 # ==============================================================================
-# ESTIMACIÓN EKC POR CLUSTER
-# Usa linearmodels.PanelOLS (efectos fijos de dos vías: ciudad + año)
+# ESTIMACION EKC POR CLUSTER
+# Usa linearmodels.PanelOLS con efectos fijos de dos vias
 # ==============================================================================
 def estimate_ekc_for_cluster(pdf_cluster, cluster_id):
-    """
-    Estima el modelo de panel EKC para un cluster específico.
-    Devuelve un dict con todos los parámetros estimados.
-    """
     try:
-        # linearmodels requiere MultiIndex (entity, time)
         pdf_cluster = pdf_cluster.copy()
         pdf_cluster["ln_ndvi"] = np.log(pdf_cluster["ndvi_mean"].clip(lower=1e-6))
         pdf_cluster = pdf_cluster.set_index(["city_code", "year"])
 
-        # Verificar que tenemos suficientes observaciones
-        n_obs     = len(pdf_cluster)
-        n_cities  = pdf_cluster.index.get_level_values("city_code").nunique()
-        n_years   = pdf_cluster.index.get_level_values("year").nunique()
+        n_obs    = len(pdf_cluster)
+        n_cities = pdf_cluster.index.get_level_values("city_code").nunique()
 
         if n_obs < MIN_OBS_PER_CLUSTER:
-            print(f"    [SKIP] Cluster {cluster_id}: solo {n_obs} obs (mínimo {MIN_OBS_PER_CLUSTER})")
+            print(f"    [SKIP] Cluster {cluster_id}: {n_obs} obs (minimo {MIN_OBS_PER_CLUSTER})")
             return None
 
         from linearmodels import PanelOLS
         import statsmodels.api as sm
 
-        # Modelo de panel con efectos fijos de ciudad y tiempo
-        # entity_effects=True → μᵢ (within transformation)
-        # time_effects=True   → λₜ
         model = PanelOLS(
             dependent=pdf_cluster["ln_ndvi"],
             exog=sm.add_constant(pdf_cluster[["ln_gdp_pps", "ln_gdp_pps_sq"]]),
@@ -147,44 +124,39 @@ def estimate_ekc_for_cluster(pdf_cluster, cluster_id):
         )
         result = model.fit(cov_type="clustered", cluster_entity=True)
 
-        # Extraer parámetros
-        params   = result.params
-        stderr   = result.std_errors
-        pvalues  = result.pvalues
+        params  = result.params
+        stderr  = result.std_errors
+        pvalues = result.pvalues
 
-        alpha = params.get("const",        None)
-        b1    = params.get("ln_gdp_pps",   None)
-        b2    = params.get("ln_gdp_pps_sq", None)
+        alpha = params.get("const",          None)
+        b1    = params.get("ln_gdp_pps",     None)
+        b2    = params.get("ln_gdp_pps_sq",  None)
 
         b1_se = stderr.get("ln_gdp_pps",    None)
         b2_se = stderr.get("ln_gdp_pps_sq", None)
         b1_p  = pvalues.get("ln_gdp_pps",   None)
         b2_p  = pvalues.get("ln_gdp_pps_sq", None)
 
-        # Calcular Turning Point: Y* = exp(−β₁ / 2β₂)
-        turning_point_y = None
+        turning_point_y    = None
         turning_point_ln_y = None
         if b1 is not None and b2 is not None and b2 != 0:
-            ln_y_star = -b1 / (2 * b2)
+            ln_y_star          = -b1 / (2 * b2)
             turning_point_ln_y = ln_y_star
             turning_point_y    = np.exp(ln_y_star)
 
-        # Bondad de ajuste
         r2     = result.rsquared
         r2_adj = result.rsquared_adj if hasattr(result, "rsquared_adj") else None
         f_stat = result.f_statistic.stat if hasattr(result, "f_statistic") else None
         f_pval = result.f_statistic.pval if hasattr(result, "f_statistic") else None
+        aic    = result.loglik * (-2) + 2 * len(params) if hasattr(result, "loglik") else None
+        bic    = result.loglik * (-2) + np.log(n_obs) * len(params) if hasattr(result, "loglik") else None
 
-        # AIC / BIC de statsmodels (aproximación)
-        aic = result.loglik * (-2) + 2 * len(params) if hasattr(result, "loglik") else None
-        bic = result.loglik * (-2) + np.log(n_obs) * len(params) if hasattr(result, "loglik") else None
-
-        # Clasificar forma de la curva
         sig5 = lambda p: p is not None and p < 0.05
         ekc_confirmed = (
             b1 is not None and b1 > 0 and sig5(b1_p) and
             b2 is not None and b2 < 0 and sig5(b2_p)
         )
+
         if ekc_confirmed:
             ekc_shape = "INVERTED_U"
         elif b1 is not None and b2 is not None:
@@ -201,39 +173,33 @@ def estimate_ekc_for_cluster(pdf_cluster, cluster_id):
         countries  = list(pdf_cluster.reset_index()["country_code"].unique()) if "country_code" in pdf_cluster.columns else []
 
         return {
-            "cluster_id":             int(cluster_id),
-            "cluster_label":          None,   # se unirá desde fact_kuznets
-            "estimation_year":        int(datetime.now().year),
-            "n_cities":               int(n_cities),
-            "n_observations":         int(n_obs),
-            "city_codes":             json.dumps(city_codes),
-            "countries_represented":  json.dumps(countries),
-            "gdp_pps_mean":           float(pdf_cluster.reset_index()["gdp_pps_per_capita"].mean()) if "gdp_pps_per_capita" in pdf_cluster.columns else None,
-            "gdp_pps_std":            float(pdf_cluster.reset_index()["gdp_pps_per_capita"].std())  if "gdp_pps_per_capita" in pdf_cluster.columns else None,
-            "ndvi_mean":              float(pdf_cluster.reset_index()["ndvi_mean"].mean()),
-            "alpha":                  float(alpha) if alpha is not None else None,
-            "beta1":                  float(b1)    if b1    is not None else None,
-            "beta2":                  float(b2)    if b2    is not None else None,
-            "beta1_se":               float(b1_se) if b1_se is not None else None,
-            "beta2_se":               float(b2_se) if b2_se is not None else None,
-            "beta1_pvalue":           float(b1_p)  if b1_p  is not None else None,
-            "beta2_pvalue":           float(b2_p)  if b2_p  is not None else None,
-            "turning_point_y_star":   float(turning_point_y)    if turning_point_y    is not None else None,
-            "turning_point_ln_y":     float(turning_point_ln_y) if turning_point_ln_y is not None else None,
-            "r_squared":              float(r2)     if r2     is not None else None,
-            "r_squared_adj":          float(r2_adj) if r2_adj is not None else None,
-            "f_statistic":            float(f_stat) if f_stat is not None else None,
-            "f_pvalue":               float(f_pval) if f_pval is not None else None,
-            "aic":                    float(aic)    if aic    is not None else None,
-            "bic":                    float(bic)    if bic    is not None else None,
+            "cluster_id":              int(cluster_id),
+            "n_cities":                int(n_cities),
+            "n_observations":          int(n_obs),
+            "city_codes":              json.dumps(city_codes),
+            "countries_represented":   json.dumps(countries),
+            "gdp_pps_mean":            float(pdf_cluster.reset_index()["gdp_pps_per_capita"].mean()) if "gdp_pps_per_capita" in pdf_cluster.columns else None,
+            "alpha":                   float(alpha)    if alpha    is not None else None,
+            "beta1":                   float(b1)       if b1       is not None else None,
+            "beta2":                   float(b2)       if b2       is not None else None,
+            "beta1_se":                float(b1_se)    if b1_se    is not None else None,
+            "beta2_se":                float(b2_se)    if b2_se    is not None else None,
+            "beta1_pvalue":            float(b1_p)     if b1_p     is not None else None,
+            "beta2_pvalue":            float(b2_p)     if b2_p     is not None else None,
+            "turning_point_y_star":    float(turning_point_y)    if turning_point_y    is not None else None,
+            "turning_point_ln_y":      float(turning_point_ln_y) if turning_point_ln_y is not None else None,
+            "r_squared":               float(r2)       if r2       is not None else None,
+            "r_squared_adj":           float(r2_adj)   if r2_adj   is not None else None,
+            "f_statistic":             float(f_stat)   if f_stat   is not None else None,
+            "f_pvalue":                float(f_pval)   if f_pval   is not None else None,
+            "aic":                     float(aic)      if aic      is not None else None,
+            "bic":                     float(bic)      if bic      is not None else None,
             "ekc_hypothesis_supported": bool(ekc_confirmed),
-            "ekc_shape":              ekc_shape,
-            "_estimation_timestamp":  MODEL_TS,
-            "_model_version":         MODEL_VERSION,
+            "ekc_shape":               ekc_shape,
         }
 
     except ImportError:
-        print("  [ERROR] linearmodels no instalado. Instala: pip install linearmodels")
+        print("  [ERROR] linearmodels no instalado: pip install linearmodels")
         return None
     except Exception as e:
         print(f"    [ERROR] Cluster {cluster_id}: {e}")
@@ -241,117 +207,135 @@ def estimate_ekc_for_cluster(pdf_cluster, cluster_id):
 
 
 # ==============================================================================
-# ACTUALIZAR GOLD CON LOS PARÁMETROS EKC
+# ACTUALIZAR DIM_CLUSTER (SCD-2) CON PARAMETROS EKC
 # ==============================================================================
-def update_gold(spark, ekc_results: list):
-    print("\n  Escribiendo resultados EKC en Gold ...")
+def update_dim_cluster_ekc(pool, ekc_results: list):
+    """
+    Para cada cluster con resultado EKC, actualiza la version activa de dim_cluster
+    cerrando la existente e insertando una nueva con los parametros reales.
+    """
+    today_str = MODEL_RUN_DATE
+    yesterday_str = datetime.fromtimestamp(
+        datetime.now(timezone.utc).timestamp() - 86400
+    ).strftime("%Y-%m-%d")
 
-    # --- Escribir ekc_parameters ---
-    if ekc_results:
-        schema = StructType([
-            StructField("cluster_id",               IntegerType(), True),
-            StructField("cluster_label",            StringType(),  True),
-            StructField("estimation_year",          IntegerType(), True),
-            StructField("n_cities",                 IntegerType(), True),
-            StructField("n_observations",           IntegerType(), True),
-            StructField("city_codes",               StringType(),  True),
-            StructField("countries_represented",    StringType(),  True),
-            StructField("gdp_pps_mean",             DoubleType(),  True),
-            StructField("gdp_pps_std",              DoubleType(),  True),
-            StructField("ndvi_mean",                DoubleType(),  True),
-            StructField("alpha",                    DoubleType(),  True),
-            StructField("beta1",                    DoubleType(),  True),
-            StructField("beta2",                    DoubleType(),  True),
-            StructField("beta1_se",                 DoubleType(),  True),
-            StructField("beta2_se",                 DoubleType(),  True),
-            StructField("beta1_pvalue",             DoubleType(),  True),
-            StructField("beta2_pvalue",             DoubleType(),  True),
-            StructField("turning_point_y_star",     DoubleType(),  True),
-            StructField("turning_point_ln_y",       DoubleType(),  True),
-            StructField("r_squared",                DoubleType(),  True),
-            StructField("r_squared_adj",            DoubleType(),  True),
-            StructField("f_statistic",              DoubleType(),  True),
-            StructField("f_pvalue",                 DoubleType(),  True),
-            StructField("aic",                      DoubleType(),  True),
-            StructField("bic",                      DoubleType(),  True),
-            StructField("ekc_hypothesis_supported", BooleanType(), True),
-            StructField("ekc_shape",                StringType(),  True),
-            StructField("_estimation_timestamp",    StringType(),  True),
-            StructField("_model_version",           StringType(),  True),
-        ])
+    for r in ekc_results:
+        cluster_id = r["cluster_id"]
 
-        rows = [tuple(r[f.name] for f in schema.fields) for r in ekc_results]
-        df_params = spark.createDataFrame(rows, schema)
-        df_params.write.mode("overwrite").parquet(f"{HDFS_GOLD}/ekc_parameters")
-        print(f"  [GOLD] ekc_parameters: {len(ekc_results)} clusters escritos")
+        # Leer version activa para obtener label y n_cities
+        existing = pool.execute_query(
+            "SELECT cluster_sk, cluster_label, n_cities FROM dim_cluster WHERE cluster_id=%s AND is_current=1",
+            (cluster_id,)
+        )
+        cluster_label = existing[0]["cluster_label"] if existing else f"Cluster_{cluster_id}"
+        n_cities      = r.get("n_cities") or (existing[0]["n_cities"] if existing else 0)
 
-    # --- Actualizar fact_kuznets con parámetros EKC por cluster ---
-    try:
-        fk = spark.read.parquet(f"{HDFS_GOLD}/fact_kuznets")
-    except Exception as e:
-        print(f"[SKIP] fact_kuznets no disponible para actualización EKC: {e}")
-        return
-
-    ekc_lookup = spark.createDataFrame(
-        [(r["cluster_id"], r.get("beta1"), r.get("beta2"), r.get("alpha"),
-          r.get("turning_point_y_star"), r.get("r_squared"),
-          r.get("beta1_pvalue"), r.get("beta2_pvalue"), r.get("ekc_shape"))
-         for r in ekc_results],
-        StructType([
-            StructField("cl_id",           IntegerType(), True),
-            StructField("ekc_beta1",       DoubleType(),  True),
-            StructField("ekc_beta2",       DoubleType(),  True),
-            StructField("ekc_alpha",       DoubleType(),  True),
-            StructField("ekc_tp",          DoubleType(),  True),
-            StructField("ekc_r2",          DoubleType(),  True),
-            StructField("ekc_p_beta1",     DoubleType(),  True),
-            StructField("ekc_p_beta2",     DoubleType(),  True),
-            StructField("ekc_shape_val",   StringType(),  True),
-        ])
-    )
-
-    # Drop columnas EKC anteriores
-    drop_cols = ["ekc_beta1","ekc_beta2","ekc_alpha","ekc_turning_point_y",
-                 "ekc_r_squared","ekc_p_value_beta1","ekc_p_value_beta2","ekc_shape"]
-    fk_clean = fk.drop(*[c for c in drop_cols if c in fk.columns])
-
-    fk_updated = fk_clean.join(
-        ekc_lookup,
-        fk_clean["cluster_id"] == ekc_lookup["cl_id"],
-        how="left"
-    ).drop("cl_id")
-
-    # Renombrar a nombres del DDL
-    rename = {
-        "ekc_tp":       "ekc_turning_point_y",
-        "ekc_r2":       "ekc_r_squared",
-        "ekc_p_beta1":  "ekc_p_value_beta1",
-        "ekc_p_beta2":  "ekc_p_value_beta2",
-        "ekc_shape_val":"ekc_shape",
-    }
-    for old, new in rename.items():
-        if old in fk_updated.columns:
-            fk_updated = fk_updated.withColumnRenamed(old, new)
-
-    # GDP gap al turning point: GDP_actual − Y*
-    if "gdp_pps_per_capita" in fk_updated.columns and "ekc_turning_point_y" in fk_updated.columns:
-        fk_updated = fk_updated.withColumn(
-            "gdp_gap_to_turning",
-            F.col("gdp_pps_per_capita") - F.col("ekc_turning_point_y")
+        # Cerrar version activa
+        pool.execute_write(
+            "UPDATE dim_cluster SET valid_to=%s, is_current=0 WHERE cluster_id=%s AND is_current=1",
+            (yesterday_str, cluster_id)
         )
 
-    # Materializar antes del overwrite para evitar FileNotFoundException por self-overwrite
-    fk_updated = fk_updated.cache()
-    fk_updated.count()
+        # Insertar nueva version
+        max_sk_row = pool.execute_query("SELECT COALESCE(MAX(cluster_sk),0) AS m FROM dim_cluster")
+        max_sk = (max_sk_row[0]["m"] or 0) + 1
 
-    (
-        fk_updated.write
-        .mode("overwrite")
-        .partitionBy("year", "country")
-        .parquet(f"{HDFS_GOLD}/fact_kuznets")
+        pool.execute_write(
+            """INSERT INTO dim_cluster
+               (cluster_sk, cluster_id, cluster_label,
+                beta1, beta2, alpha,
+                turning_point_y_star, r_squared_adj,
+                ekc_shape, ekc_hypothesis_supported,
+                n_cities,
+                valid_from, valid_to, is_current)
+               VALUES (%s,%s,%s, %s,%s,%s, %s,%s, %s,%s, %s, %s,%s,%s)""",
+            (max_sk, cluster_id, cluster_label,
+             safe_float(r.get("beta1")), safe_float(r.get("beta2")),
+             safe_float(r.get("alpha")),
+             safe_float(r.get("turning_point_y_star")),
+             safe_float(r.get("r_squared_adj")),
+             r.get("ekc_shape", "UNCLEAR"),
+             1 if r.get("ekc_hypothesis_supported") else 0,
+             int(n_cities),
+             today_str, "9999-12-31", 1)
+        )
+
+    print(f"  [DIM_CLUSTER] {len(ekc_results)} versiones EKC actualizadas (SCD-2)")
+
+
+# ==============================================================================
+# ACTUALIZAR FACT_KUZNETS CON PARAMETROS EKC
+# ==============================================================================
+def update_fact_kuznets_ekc(pool, ekc_results: list):
+    """
+    Para cada cluster, actualiza fact_kuznets con los parametros EKC y calcula
+    gdp_gap_to_turning = gdp_pps_per_capita - turning_point_y_star
+    """
+    print("  Actualizando fact_kuznets con parametros EKC ...")
+    for r in ekc_results:
+        cluster_id = r["cluster_id"]
+        b1         = safe_float(r.get("beta1"))
+        b2         = safe_float(r.get("beta2"))
+        alpha      = safe_float(r.get("alpha"))
+        tp         = safe_float(r.get("turning_point_y_star"))
+        r2         = safe_float(r.get("r_squared"))
+        ekc_shape  = r.get("ekc_shape", "UNCLEAR")
+
+        pool.execute_write(
+            """UPDATE fact_kuznets
+               SET ekc_beta1=%s, ekc_beta2=%s, ekc_alpha=%s,
+                   ekc_turning_point_y=%s, ekc_r_squared=%s,
+                   ekc_shape=%s,
+                   gdp_gap_to_turning = CASE
+                       WHEN %s IS NOT NULL AND gdp_pps_per_capita IS NOT NULL
+                       THEN gdp_pps_per_capita - %s
+                       ELSE NULL
+                   END
+               WHERE cluster_id=%s""",
+            (b1, b2, alpha, tp, r2, ekc_shape,
+             tp, tp,
+             cluster_id)
+        )
+
+    print(f"  [FACT_KUZNETS] EKC actualizado para {len(ekc_results)} clusters")
+
+
+# ==============================================================================
+# ACTUALIZAR MODEL_RESULTS CON EKC
+# ==============================================================================
+def update_model_results_ekc(pool, ekc_results: list):
+    """Inserta/actualiza model_results con parametros EKC por cluster."""
+    # Obtener city_sk de cada cluster desde fact_kuznets
+    fk_rows = pool.execute_query(
+        "SELECT DISTINCT city_sk, year, month, cluster_id FROM fact_kuznets WHERE cluster_id IS NOT NULL"
     )
-    fk_updated.unpersist()
-    print(f"  [GOLD] fact_kuznets actualizado con parámetros EKC")
+
+    cluster_to_result = {r["cluster_id"]: r for r in ekc_results}
+
+    sql = """
+        INSERT INTO model_results
+            (city_sk, year, month, ekc_cluster_id,
+             ekc_turning_point_y, _model_run_date, _pipeline_version)
+        VALUES (%s,%s,%s,%s, %s,%s,%s)
+        ON DUPLICATE KEY UPDATE
+            ekc_cluster_id=VALUES(ekc_cluster_id),
+            ekc_turning_point_y=VALUES(ekc_turning_point_y),
+            _model_run_date=VALUES(_model_run_date)
+    """
+    rows = []
+    for fk in fk_rows:
+        r = cluster_to_result.get(fk["cluster_id"])
+        if r:
+            rows.append((
+                fk["city_sk"], fk["year"], fk["month"],
+                fk["cluster_id"],
+                safe_float(r.get("turning_point_y_star")),
+                MODEL_RUN_DATE, MODEL_VERSION,
+            ))
+
+    if rows:
+        pool.execute_many(sql, rows)
+    print(f"  [MODEL_RESULTS] EKC: {len(rows)} filas actualizadas")
 
 
 # ==============================================================================
@@ -365,17 +349,17 @@ def main():
 
     print("=" * 65)
     print("  GTP — MODELO 2: EKC PANEL REGRESSION")
-    print(f"  Modelo:  ln(NDVI) = α + β₁·ln(GDP) + β₂·[ln(GDP)]² + FE")
-    print(f"  Turning: Y* = exp(−β₁ / 2β₂)")
+    print(f"  Modelo: ln(NDVI) = alpha + beta1*ln(GDP) + beta2*[ln(GDP)]^2 + FE")
+    print(f"  Turning Point: Y* = exp(-beta1 / 2*beta2)")
+    print(f"  Fuente: MariaDB Silver/Gold")
     print("=" * 65)
 
-    spark = get_spark()
+    pool = get_pool()
 
     # 1. Cargar datos de panel
-    pdf = load_panel_data(spark)
+    pdf = load_panel_data(pool)
     if pdf is None:
-        print("[SKIP] EKC regression omitida: Gold no disponible.")
-        spark.stop()
+        print("[SKIP] EKC regression omitida.")
         return
 
     # 2. Estimar por cluster
@@ -385,7 +369,9 @@ def main():
     print(f"\n  Estimando EKC para {len(clusters_to_run)} cluster(s) ...")
     for cluster_id in clusters_to_run:
         pdf_cluster = pdf[pdf["cluster_id"] == cluster_id].copy()
-        print(f"\n  --- Cluster {cluster_id}: {len(pdf_cluster)} obs, {pdf_cluster['city_code'].nunique()} ciudades ---")
+        n_obs    = len(pdf_cluster)
+        n_cities = pdf_cluster["city_code"].nunique()
+        print(f"\n  --- Cluster {cluster_id}: {n_obs} obs, {n_cities} ciudades ---")
         result = estimate_ekc_for_cluster(pdf_cluster, cluster_id)
         if result:
             ekc_results.append(result)
@@ -393,18 +379,20 @@ def main():
             b1 = result.get("beta1")
             b2 = result.get("beta2")
             r2 = result.get("r_squared")
-            print(f"    β₁={b1:.4f}  β₂={b2:.4f}  Y*={tp:.0f} PPS  R²={r2:.3f}  Forma={result['ekc_shape']}")
+            print(f"    beta1={b1:.4f}  beta2={b2:.4f}  Y*={tp:.0f} PPS  "
+                  f"R2={r2:.3f}  Forma={result['ekc_shape']}")
 
-    # 3. Actualizar Gold
+    # 3. Actualizar MariaDB
     if ekc_results:
-        update_gold(spark, ekc_results)
+        update_dim_cluster_ekc(pool, ekc_results)
+        update_fact_kuznets_ekc(pool, ekc_results)
+        update_model_results_ekc(pool, ekc_results)
     else:
         print("\n[WARN] No se generaron resultados EKC.")
 
     print("\n" + "=" * 65)
-    print(f"  EKC REGRESSION COMPLETADA | {len(ekc_results)}/{len(clusters_to_run)} clusters estimados")
+    print(f"  EKC REGRESSION COMPLETADA | {len(ekc_results)}/{len(clusters_to_run)} clusters")
     print("=" * 65)
-    spark.stop()
 
 
 if __name__ == "__main__":
