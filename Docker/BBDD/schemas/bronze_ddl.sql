@@ -403,8 +403,131 @@ TBLPROPERTIES (
 );
 
 -- =============================================================================
+-- TABLA 13: MODIS NDVI — Vegetación 2000-2003 (gap-fill pre-Landsat)
+-- Fuente: Google Earth Engine, colección MODIS/006/MOD13A3
+-- Granularidad: ciudad × mes
+-- Ingesta: modis_ndvi_extract.py vía GEE
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS bronze_modis_ndvi_raw (
+    city STRING, month INT,
+    ndvi_mean DOUBLE COMMENT 'NDVI medio mensual MODIS (MOD13A3, escala 0.0001)',
+    ndvi_std DOUBLE COMMENT 'Desviación estándar espacial NDVI MODIS',
+    _ingestion_date STRING, _source_system STRING COMMENT 'GEE_MODIS_NDVI', _file_name STRING
+) COMMENT 'NDVI mensual MODIS 2000-2003 para cubrir gap pre-Landsat'
+PARTITIONED BY (year INT, country STRING)
+STORED AS PARQUET LOCATION 'hdfs:///user/gtp/bronze/modis_ndvi_raw'
+TBLPROPERTIES ('parquet.compression'='SNAPPY','transactional'='false','immutable'='true','created_by'='GTP_bronze_ingest.py');
+
+-- =============================================================================
+-- TABLA 14: MODIS LST — Urban Heat Island mensual
+-- Fuente: Google Earth Engine, colección MODIS/006/MOD11A2 agregada mensualmente
+-- Granularidad: ciudad × mes
+-- Ingesta: modis_lst_extract.py vía GEE
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS bronze_modis_lst_raw (
+    city STRING, month INT,
+    lst_day_c DOUBLE COMMENT 'Temperatura superficial diurna mensual (°C)',
+    lst_night_c DOUBLE COMMENT 'Temperatura superficial nocturna mensual (°C)',
+    _ingestion_date STRING, _source_system STRING COMMENT 'GEE_MODIS_LST', _file_name STRING
+) COMMENT 'Land Surface Temperature MODIS mensual 2000+ (Urban Heat Island)'
+PARTITIONED BY (year INT, country STRING)
+STORED AS PARQUET LOCATION 'hdfs:///user/gtp/bronze/modis_lst_raw'
+TBLPROPERTIES ('parquet.compression'='SNAPPY','transactional'='false','immutable'='true','created_by'='GTP_bronze_ingest.py');
+
+-- =============================================================================
+-- TABLA 15: Nighttime Lights — DMSP anual (2000-2011) + VIIRS mensual (2012+)
+-- Fuente: Google Earth Engine (NOAA/DMSP-OLS + NOAA/VIIRS/DNB/MONTHLY_V1/VCMSLCFG)
+-- Granularidad: ciudad × año (DMSP) / ciudad × mes (VIIRS)
+-- Ingesta: ntl_extract.py vía GEE
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS bronze_ntl_raw (
+    city STRING,
+    month INT COMMENT 'Mes 1-12 para VIIRS; 0 para DMSP (anual)',
+    ntl_mean DOUBLE COMMENT 'Luminosidad media (DN 0-63 DMSP / nW/cm2/sr VIIRS)',
+    ntl_std DOUBLE,
+    ntl_source STRING COMMENT 'Sensor: DMSP o VIIRS',
+    _ingestion_date STRING, _source_system STRING COMMENT 'GEE_NTL', _file_name STRING
+) COMMENT 'Luces nocturnas DMSP-OLS anual (2000-2011) + VIIRS mensual (2012+)'
+PARTITIONED BY (year INT, country STRING)
+STORED AS PARQUET LOCATION 'hdfs:///user/gtp/bronze/ntl_raw'
+TBLPROPERTIES ('parquet.compression'='SNAPPY','transactional'='false','immutable'='true','created_by'='GTP_bronze_ingest.py');
+
+-- =============================================================================
+-- TABLA 16: Renovables — % electricidad renovable mensual por país
+-- Fuente: Eurostat nrg_cb_pem (mensual) / nrg_ind_ren (anual fallback)
+-- Granularidad: país × mes
+-- Ingesta: renewables_extract.py
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS bronze_renewables_raw (
+    country STRING,
+    month INT,
+    renewables_pct DOUBLE COMMENT '% electricidad generada por renovables (Eurostat nrg_cb_pem)',
+    renewables_source STRING COMMENT 'MONTHLY_NRG o ANNUAL_FILL',
+    _ingestion_date STRING, _source_system STRING COMMENT 'Eurostat_nrg', _file_name STRING
+) COMMENT '% renovables mensuales por país 2000+ (Eurostat nrg_cb_pem / nrg_ind_ren fallback)'
+PARTITIONED BY (year INT)
+STORED AS PARQUET LOCATION 'hdfs:///user/gtp/bronze/renewables_raw'
+TBLPROPERTIES ('parquet.compression'='SNAPPY','transactional'='false','immutable'='true','created_by'='GTP_bronze_ingest.py');
+
+-- =============================================================================
+-- TABLA 17: Turismo — pernoctaciones mensuales por país
+-- Fuente: Eurostat tour_occ_nim
+-- Granularidad: ciudad × mes (expandido desde país × mes)
+-- Ingesta: tourism_extract.py
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS bronze_tourism_raw (
+    city STRING, country STRING, month INT,
+    tourism_nights DOUBLE COMMENT 'Pernoctaciones mensuales en alojamiento turístico (Eurostat tour_occ_nim)',
+    tourism_source STRING,
+    _ingestion_date STRING, _source_system STRING COMMENT 'Eurostat_tourism', _file_name STRING
+) COMMENT 'Pernoctaciones turísticas mensuales por ciudad/país 2000+ (Eurostat tour_occ_nim)'
+PARTITIONED BY (year INT, country STRING)
+STORED AS PARQUET LOCATION 'hdfs:///user/gtp/bronze/tourism_raw'
+TBLPROPERTIES ('parquet.compression'='SNAPPY','transactional'='false','immutable'='true','created_by'='GTP_bronze_ingest.py');
+
+-- =============================================================================
+-- TABLA 18: EU ETS — Precio del carbono mensual
+-- Fuente: Ember Climate (mensual) / fallback anual
+-- Granularidad: año × mes (serie temporal global, sin ciudad ni país)
+-- Ingesta: ets_extract.py
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS bronze_ets_raw (
+    month INT,
+    ets_price_eur DOUBLE COMMENT 'Precio EUA EU ETS (€/tonelada CO2). NULL 2000-2004.',
+    ets_source STRING COMMENT 'EMBER_MONTHLY o FALLBACK_ANNUAL o NO_MARKET',
+    _ingestion_date STRING, _source_system STRING COMMENT 'ETS_EUA', _file_name STRING
+) COMMENT 'Precio EU ETS (€/tCO2) mensual. Fase 1 desde ene-2005; NULL 2000-2004.'
+PARTITIONED BY (year INT)
+STORED AS PARQUET LOCATION 'hdfs:///user/gtp/bronze/ets_raw'
+TBLPROPERTIES ('parquet.compression'='SNAPPY','transactional'='false','immutable'='true','created_by'='GTP_bronze_ingest.py');
+
+-- =============================================================================
+-- TABLA 19: EEA Air Quality — PM2.5 y PM10 anuales (expandidos mensualmente)
+-- Fuente: Eurostat sdg_11_50 (datos anuales por ciudad, repetidos mensualmente)
+-- Granularidad: ciudad × mes
+-- Ingesta: eea_aq_extract.py
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS bronze_eea_aq_raw (
+    city STRING, country STRING, month INT,
+    pm25_mean DOUBLE COMMENT 'PM2.5 medio anual (μg/m³), repetido mensualmente (Eurostat sdg_11_50)',
+    pm10_mean DOUBLE COMMENT 'PM10 medio anual (μg/m³), repetido mensualmente',
+    aq_source STRING COMMENT 'EUROSTAT_ANNUAL_REPEAT',
+    _ingestion_date STRING, _source_system STRING COMMENT 'EEA_AQ', _file_name STRING
+) COMMENT 'PM2.5 y PM10 por ciudad/país anuales expandidos mensualmente (Eurostat sdg_11_50)'
+PARTITIONED BY (year INT, country STRING)
+STORED AS PARQUET LOCATION 'hdfs:///user/gtp/bronze/eea_aq_raw'
+TBLPROPERTIES ('parquet.compression'='SNAPPY','transactional'='false','immutable'='true','created_by'='GTP_bronze_ingest.py');
+
+-- =============================================================================
+-- TABLA 20 (nota): Población urbana FUA — relleno de bronze_eurostat_population_raw
+-- La tabla bronze_eurostat_population_raw (TABLA 6) ya existe en el DDL.
+-- Se llena vía population_extract.py → population.csv → bronze_ingest.py (source_sk=20).
+-- No se crea tabla separada; se documenta aquí para completitud del catálogo.
+-- =============================================================================
+
+-- =============================================================================
 -- FIN BRONZE DDL
--- Total tablas: 12
+-- Total tablas: 20
 -- Convención de particionado: year=YYYY/country=XX (o country_code=XX para finance/edgar)
 -- Para registrar particiones manualmente tras carga Parquet directa:
 --   MSCK REPAIR TABLE gtp_bronze.bronze_sentinel2_raw;
@@ -414,4 +537,12 @@ TBLPROPERTIES (
 --   MSCK REPAIR TABLE gtp_bronze.bronze_edgar_co2_raw;
 --   MSCK REPAIR TABLE gtp_bronze.bronze_oecd_raw;
 --   MSCK REPAIR TABLE gtp_bronze.bronze_investeu_raw;
+--   MSCK REPAIR TABLE gtp_bronze.bronze_modis_ndvi_raw;
+--   MSCK REPAIR TABLE gtp_bronze.bronze_modis_lst_raw;
+--   MSCK REPAIR TABLE gtp_bronze.bronze_ntl_raw;
+--   MSCK REPAIR TABLE gtp_bronze.bronze_renewables_raw;
+--   MSCK REPAIR TABLE gtp_bronze.bronze_tourism_raw;
+--   MSCK REPAIR TABLE gtp_bronze.bronze_ets_raw;
+--   MSCK REPAIR TABLE gtp_bronze.bronze_eea_aq_raw;
+--   MSCK REPAIR TABLE gtp_bronze.bronze_eurostat_population_raw;
 -- =============================================================================

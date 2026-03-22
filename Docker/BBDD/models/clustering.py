@@ -38,6 +38,9 @@ CLUSTER_FEATURES = [
     "imperviousness_mean_city",
     "ln_gdp_mean_city",
     "gdp_growth_mean_city",
+    "ntl_mean_city",
+    "lst_day_c_city",
+    "pm25_mean_city",   # restaurado: ahora disponible via WHO GHO API (35 paises EU)
 ]
 
 
@@ -83,7 +86,10 @@ def build_feature_matrix(pool):
         SELECT city_sk, AVG(ndvi_mean) AS ndvi_mean_city,
                AVG(ndvi_yoy_change) AS ndvi_yoy_change_city,
                AVG(no2_mean) AS no2_mean_city,
-               AVG(imperviousness_mean) AS imperviousness_mean_city
+               AVG(imperviousness_mean) AS imperviousness_mean_city,
+               AVG(CASE WHEN year >= 2012 THEN ntl_mean END) AS ntl_mean_city,
+               AVG(lst_day_c) AS lst_day_c_city,
+               AVG(pm25_mean) AS pm25_mean_city
         FROM fact_environmental
         GROUP BY city_sk
     """)
@@ -387,6 +393,15 @@ def main():
 
     # 8. Actualizar model_results
     update_model_results(pool, df, cluster_label_map, best_k, best_sil)
+
+    # 9. Persistir dim_cluster en HDFS Silver
+    import pandas as pd
+    from hdfs_writer import write_df_to_hdfs
+    dc_rows = pool.execute_query("SELECT * FROM dim_cluster WHERE is_current=1")
+    if dc_rows:
+        write_df_to_hdfs(pd.DataFrame(dc_rows),
+                         "hdfs:///user/gtp/silver/dim_cluster/",
+                         partition_cols=["cluster_id"])
 
     print("\n" + "=" * 65)
     print(f"  CLUSTERING COMPLETADO | K={best_k} | Silhouette={best_sil:.4f}")

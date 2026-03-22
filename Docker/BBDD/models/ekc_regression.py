@@ -145,7 +145,11 @@ def estimate_ekc_for_cluster(pdf_cluster, cluster_id):
             turning_point_y    = np.exp(ln_y_star)
 
         r2     = result.rsquared
-        r2_adj = result.rsquared_adj if hasattr(result, "rsquared_adj") else None
+        # PanelOLS con efectos fijos no expone rsquared_adj; usar rsquared_within
+        # que es el R² correcto para modelos de efectos fijos de dos vías.
+        r2_adj = (result.rsquared_within
+                  if hasattr(result, "rsquared_within")
+                  else (result.rsquared_adj if hasattr(result, "rsquared_adj") else None))
         f_stat = result.f_statistic.stat if hasattr(result, "f_statistic") else None
         f_pval = result.f_statistic.pval if hasattr(result, "f_statistic") else None
         aic    = result.loglik * (-2) + 2 * len(params) if hasattr(result, "loglik") else None
@@ -157,10 +161,13 @@ def estimate_ekc_for_cluster(pdf_cluster, cluster_id):
             b2 is not None and b2 < 0 and sig5(b2_p)
         )
 
-        if ekc_confirmed:
-            ekc_shape = "INVERTED_U"
-        elif b1 is not None and b2 is not None:
-            if b1 > 0 and b2 > 0:
+        # ekc_shape refleja la forma geométrica de los coeficientes
+        # independientemente de la significancia estadística.
+        # ekc_hypothesis_supported añade el requisito de p<0.05 en ambos betas.
+        if b1 is not None and b2 is not None:
+            if b1 > 0 and b2 < 0:
+                ekc_shape = "INVERTED_U"
+            elif b1 > 0 and b2 > 0:
                 ekc_shape = "MONOTONIC_UP"
             elif b1 < 0:
                 ekc_shape = "MONOTONIC_DOWN"
@@ -389,6 +396,14 @@ def main():
         update_model_results_ekc(pool, ekc_results)
     else:
         print("\n[WARN] No se generaron resultados EKC.")
+
+    # 4. Persistir dim_cluster actualizado en HDFS Silver
+    from hdfs_writer import write_df_to_hdfs
+    dc_rows = pool.execute_query("SELECT * FROM dim_cluster WHERE is_current=1")
+    if dc_rows:
+        write_df_to_hdfs(pd.DataFrame(dc_rows),
+                         "hdfs:///user/gtp/silver/dim_cluster/",
+                         partition_cols=["cluster_id"])
 
     print("\n" + "=" * 65)
     print(f"  EKC REGRESSION COMPLETADA | {len(ekc_results)}/{len(clusters_to_run)} clusters")

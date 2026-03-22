@@ -46,6 +46,11 @@ XGB_FEATURES = [
     "green_index",
     "gdp_gap_to_turning",
     "year",
+    "ntl_mean",
+    "lst_day_c",
+    "pm25_mean",
+    "renewables_pct",
+    "ets_price_eur",
 ]
 
 CLASSES = ["DEGRADANDO", "TURNING", "RECUPERANDO"]
@@ -132,12 +137,22 @@ def load_and_label_data(pool):
 
     pdf["phase_label"] = pdf.apply(label_phase, axis=1)
 
-    dist = pdf["phase_label"].value_counts()
-    print("\n  Distribucion de fases:")
-    for phase, count in dist.items():
-        print(f"    {phase}: {count:,} ({count/len(pdf)*100:.1f}%)")
+    # Separar filas con GDP completo para train/test.
+    # Años sin Eurostat GDP (ej. 2025-2026) no se pueden etiquetar correctamente
+    # y sesgan el test set hacia DEGRADANDO. Se excluyen del entrenamiento
+    # pero se mantienen en pdf_full para que el modelo prediga sobre ellos.
+    pdf_labeled = pdf[pdf["gdp_pps_per_capita"].notna()].copy()
+    n_sin_gdp = len(pdf) - len(pdf_labeled)
+    if n_sin_gdp > 0:
+        print(f"  [INFO] {n_sin_gdp} ciudad x año sin GDP excluidos de train/test "
+              f"(prediccion aplicada igualmente)")
 
-    return pdf
+    dist = pdf_labeled["phase_label"].value_counts()
+    print("\n  Distribucion de fases (datos con GDP completo):")
+    for phase, count in dist.items():
+        print(f"    {phase}: {count:,} ({count/len(pdf_labeled)*100:.1f}%)")
+
+    return pdf, pdf_labeled
 
 
 # ==============================================================================
@@ -229,6 +244,16 @@ def train_xgboost(train, test):
 # PREDICCION SOBRE TODO EL DATASET
 # ==============================================================================
 def predict_all(clf, le, feature_cols, pdf_full):
+    pdf_full = pdf_full.copy().sort_values(["city_sk", "year"])
+
+    # Para años sin GDP (2025+), forward-fill gdp_gap_to_turning por ciudad
+    # usando el último valor conocido. Se reemplaza automáticamente en el
+    # siguiente run del pipeline cuando Eurostat publique el GDP real.
+    if "gdp_gap_to_turning" in pdf_full.columns:
+        pdf_full["gdp_gap_to_turning"] = (
+            pdf_full.groupby("city_sk")["gdp_gap_to_turning"].ffill()
+        )
+
     X_all    = pdf_full[feature_cols].fillna(0)
     y_proba  = clf.predict_proba(X_all)
     pdf_full = pdf_full.copy()
@@ -352,13 +377,13 @@ def main():
     pool = get_pool()
 
     # 1. Cargar y etiquetar
-    pdf = load_and_label_data(pool)
-    if pdf is None:
+    pdf_full, pdf_labeled = load_and_label_data(pool)
+    if pdf_labeled is None or len(pdf_labeled) == 0:
         print("[SKIP] XGBoost omitido.")
         return
 
-    # 2. Split temporal
-    train, test = temporal_split(pdf, args.test_years)
+    # 2. Split temporal (solo sobre datos con GDP completo)
+    train, test = temporal_split(pdf_labeled, args.test_years)
     if len(train) < 50:
         print(f"[ERROR] Solo {len(train)} obs en train. Necesitas mas datos.")
         sys.exit(1)
@@ -368,8 +393,8 @@ def main():
     if clf is None:
         sys.exit(1)
 
-    # 4. Prediccion sobre todo el dataset
-    pdf_predictions = predict_all(clf, le, feature_cols, pdf)
+    # 4. Prediccion sobre todo el dataset (incluye años sin GDP como 2025-2026)
+    pdf_predictions = predict_all(clf, le, feature_cols, pdf_full)
 
     # 5. Actualizar MariaDB
     update_mariadb(pool, pdf_predictions)

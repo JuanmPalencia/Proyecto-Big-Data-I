@@ -70,6 +70,17 @@ SCRIPTS_ECONOMICOS = [
     # Post-proceso InvestEU: raw/ → DatosProcesados/investeu_summary.csv
     {"file": "investeu_process.py",  "args": []},
     {"file": "YFinance_extract.py",  "args": []},
+    # Nuevas fuentes económicas (tablas Bronze 16-20)
+    # % renovables mensual por país via Eurostat nrg_cb_pem → renewables.csv
+    {"file": "renewables_extract.py",    "args": []},
+    # Pernoctaciones turísticas mensuales via Eurostat tour_occ_nim → tourism.csv
+    {"file": "tourism_extract.py",       "args": []},
+    # Precio EU ETS mensual → ets_price.csv
+    {"file": "ets_extract.py",           "args": []},
+    # PM2.5/PM10 anuales por ciudad via Eurostat sdg_11_50 → eea_aq.csv
+    {"file": "eea_aq_extract.py",        "args": []},
+    # Población FUA via Eurostat → population.csv (rellena bronze_eurostat_population_raw)
+    {"file": "population_extract.py",    "args": []},
 ]
 
 # FASE 2: Datos ambientales satelitales
@@ -95,6 +106,13 @@ SCRIPTS_AMBIENTALES = [
     {"file": "urban_atlas_extract.py",   "args": []},
     # Emisiones CO2 nacionales EDGAR v8 (descarga automática JRC) → edgar_co2.csv
     {"file": "edgar_co2_extract.py",     "args": []},
+    # Nuevas fuentes ambientales (tablas Bronze 13-15)
+    # NDVI mensual MODIS 2000-2003 (gap-fill pre-Landsat) via GEE → modis_ndvi.csv
+    {"file": "modis_ndvi_extract.py",    "args": []},
+    # Land Surface Temperature MODIS mensual via GEE → modis_lst.csv
+    {"file": "modis_lst_extract.py",     "args": []},
+    # Luces nocturnas DMSP anual (2000-2011) + VIIRS mensual (2012+) via GEE → ntl.csv
+    {"file": "ntl_extract.py",           "args": []},
 ]
 
 # FASE 3: Post-proceso (merge → dataset maestro CSV)

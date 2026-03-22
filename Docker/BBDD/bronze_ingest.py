@@ -14,9 +14,18 @@ Fuentes ingestadas:
   9.  edgar_co2.csv           → bronze_edgar_co2_raw
   10. oecd_indicators.csv     → bronze_oecd_raw
   11. investeu_summary.csv    → bronze_investeu_raw
+  12. (sin CSV propio — bronze_eurostat_population_raw se llena via source_sk=20)
+  13. modis_ndvi.csv          → bronze_modis_ndvi_raw
+  14. modis_lst.csv           → bronze_modis_lst_raw
+  15. ntl.csv                 → bronze_ntl_raw
+  16. renewables.csv          → bronze_renewables_raw
+  17. tourism.csv             → bronze_tourism_raw
+  18. ets_price.csv           → bronze_ets_raw
+  19. eea_aq.csv              → bronze_eea_aq_raw
+  20. population.csv          → bronze_eurostat_population_raw
 
 Ejecución en Lorca:
-  spark-submit --master yarn bronze_ingest.py [--mode overwrite|append] [--source all|s2|s5p|hrl|finance|eurostat|era5|s5p_aerosol|urban_atlas|edgar_co2|oecd|investeu]
+  spark-submit --master yarn bronze_ingest.py [--mode overwrite|append] [--source all|s2|s5p|hrl|finance|eurostat|era5|s5p_aerosol|urban_atlas|edgar_co2|oecd|investeu|modis_ndvi|modis_lst|ntl|renewables|tourism|ets|eea_aq|population]
 """
 
 import sys
@@ -670,6 +679,362 @@ def ingest_investeu(spark, mode: str):
 
 
 # ==============================================================================
+# INGESTA 13 — MODIS NDVI (gap-fill pre-Landsat 2000-2003)
+# CSV fuente: DatosProcesados/modis_ndvi.csv
+# Columnas: City, Year, Month, NDVI_Mean, NDVI_Std
+# ==============================================================================
+def ingest_modis_ndvi(spark, mode: str):
+    print("\n[13/20] Ingesta MODIS NDVI (gap-fill 2000-2003) ...")
+    path = _local(PROCESSED_DIR / "modis_ndvi.csv")
+
+    schema = StructType([
+        StructField("City",      StringType(),  True),
+        StructField("Year",      IntegerType(), True),
+        StructField("Month",     IntegerType(), True),
+        StructField("NDVI_Mean", DoubleType(),  True),
+        StructField("NDVI_Std",  DoubleType(),  True),
+    ])
+
+    df = (
+        spark.read
+        .option("header", "true")
+        .option("mode", "DROPMALFORMED")
+        .schema(schema)
+        .csv(path)
+    )
+
+    df = (
+        df
+        .withColumnRenamed("City",      "city")
+        .withColumnRenamed("Year",      "year")
+        .withColumnRenamed("Month",     "month")
+        .withColumnRenamed("NDVI_Mean", "ndvi_mean")
+        .withColumnRenamed("NDVI_Std",  "ndvi_std")
+    )
+
+    df = df.withColumn("country", extract_country(F.col("city")))
+    df = df.filter(F.col("city").isNotNull() & F.col("year").isNotNull())
+    df = add_metadata(df, "GEE_MODIS_NDVI", "modis_ndvi.csv")
+    log_stats(df, "MODIS_NDVI")
+
+    write_bronze(df, f"{HDFS_BASE}/modis_ndvi_raw", ["year", "country"], mode)
+    repair_table(spark, "gtp_bronze", "bronze_modis_ndvi_raw")
+
+
+# ==============================================================================
+# INGESTA 14 — MODIS LST (Land Surface Temperature — Urban Heat Island)
+# CSV fuente: DatosProcesados/modis_lst.csv
+# Columnas: City, Year, Month, LST_Day_C, LST_Night_C
+# ==============================================================================
+def ingest_modis_lst(spark, mode: str):
+    print("\n[14/20] Ingesta MODIS LST (Urban Heat Island) ...")
+    path = _local(PROCESSED_DIR / "modis_lst.csv")
+
+    schema = StructType([
+        StructField("City",        StringType(),  True),
+        StructField("Year",        IntegerType(), True),
+        StructField("Month",       IntegerType(), True),
+        StructField("LST_Day_C",   DoubleType(),  True),
+        StructField("LST_Night_C", DoubleType(),  True),
+    ])
+
+    df = (
+        spark.read
+        .option("header", "true")
+        .option("mode", "DROPMALFORMED")
+        .schema(schema)
+        .csv(path)
+    )
+
+    df = (
+        df
+        .withColumnRenamed("City",        "city")
+        .withColumnRenamed("Year",        "year")
+        .withColumnRenamed("Month",       "month")
+        .withColumnRenamed("LST_Day_C",   "lst_day_c")
+        .withColumnRenamed("LST_Night_C", "lst_night_c")
+    )
+
+    df = df.withColumn("country", extract_country(F.col("city")))
+    df = df.filter(F.col("city").isNotNull() & F.col("year").isNotNull())
+    df = add_metadata(df, "GEE_MODIS_LST", "modis_lst.csv")
+    log_stats(df, "MODIS_LST")
+
+    write_bronze(df, f"{HDFS_BASE}/modis_lst_raw", ["year", "country"], mode)
+    repair_table(spark, "gtp_bronze", "bronze_modis_lst_raw")
+
+
+# ==============================================================================
+# INGESTA 15 — Nighttime Lights (DMSP anual 2000-2011 + VIIRS mensual 2012+)
+# CSV fuente: DatosProcesados/ntl.csv
+# Columnas: City, Year, Month, NTL_Mean, NTL_Std, NTL_Source
+# Nota: DMSP rows tienen Month=0 (dato anual); VIIRS rows tienen Month=1-12.
+# ==============================================================================
+def ingest_ntl(spark, mode: str):
+    print("\n[15/20] Ingesta Nighttime Lights (DMSP+VIIRS) ...")
+    path = _local(PROCESSED_DIR / "ntl.csv")
+
+    schema = StructType([
+        StructField("City",       StringType(),  True),
+        StructField("Year",       IntegerType(), True),
+        StructField("Month",      IntegerType(), True),
+        StructField("NTL_Mean",   DoubleType(),  True),
+        StructField("NTL_Std",    DoubleType(),  True),
+        StructField("NTL_Source", StringType(),  True),
+    ])
+
+    df = (
+        spark.read
+        .option("header", "true")
+        .option("mode", "DROPMALFORMED")
+        .schema(schema)
+        .csv(path)
+    )
+
+    df = (
+        df
+        .withColumnRenamed("City",       "city")
+        .withColumnRenamed("Year",       "year")
+        .withColumnRenamed("Month",      "month")
+        .withColumnRenamed("NTL_Mean",   "ntl_mean")
+        .withColumnRenamed("NTL_Std",    "ntl_std")
+        .withColumnRenamed("NTL_Source", "ntl_source")
+    )
+
+    df = df.withColumn("country", extract_country(F.col("city")))
+    df = df.filter(F.col("city").isNotNull() & F.col("year").isNotNull())
+    df = add_metadata(df, "GEE_NTL", "ntl.csv")
+    log_stats(df, "NTL")
+
+    write_bronze(df, f"{HDFS_BASE}/ntl_raw", ["year", "country"], mode)
+    repair_table(spark, "gtp_bronze", "bronze_ntl_raw")
+
+
+# ==============================================================================
+# INGESTA 16 — Renovables (% electricidad renovable mensual por país)
+# CSV fuente: DatosProcesados/renewables.csv
+# Columnas: Country, Year, Month, Renewables_Pct, Source
+# Nota: Particionado solo por year (country es columna de datos, no tiene city).
+# ==============================================================================
+def ingest_renewables(spark, mode: str):
+    print("\n[16/20] Ingesta Renovables (Eurostat nrg_cb_pem) ...")
+    path = _local(PROCESSED_DIR / "renewables.csv")
+
+    schema = StructType([
+        StructField("Country",          StringType(),  True),
+        StructField("Year",             IntegerType(), True),
+        StructField("Month",            IntegerType(), True),
+        StructField("Renewables_Pct",   DoubleType(),  True),
+        StructField("Source",           StringType(),  True),
+    ])
+
+    df = (
+        spark.read
+        .option("header", "true")
+        .option("mode", "DROPMALFORMED")
+        .schema(schema)
+        .csv(path)
+    )
+
+    df = (
+        df
+        .withColumnRenamed("Country",        "country")
+        .withColumnRenamed("Year",           "year")
+        .withColumnRenamed("Month",          "month")
+        .withColumnRenamed("Renewables_Pct", "renewables_pct")
+        .withColumnRenamed("Source",         "renewables_source")
+    )
+
+    df = df.filter(F.col("country").isNotNull() & F.col("year").isNotNull())
+    df = add_metadata(df, "Eurostat_nrg", "renewables.csv")
+    log_stats(df, "Renewables")
+
+    # Particionado solo por year — country es columna de datos
+    write_bronze(df, f"{HDFS_BASE}/renewables_raw", ["year"], mode)
+    repair_table(spark, "gtp_bronze", "bronze_renewables_raw")
+
+
+# ==============================================================================
+# INGESTA 17 — Turismo (pernoctaciones mensuales por ciudad/país)
+# CSV fuente: DatosProcesados/tourism.csv
+# Columnas: City, Country, Year, Month, Tourism_Nights, Tourism_Source
+# ==============================================================================
+def ingest_tourism(spark, mode: str):
+    print("\n[17/20] Ingesta Turismo (Eurostat tour_occ_nim) ...")
+    path = _local(PROCESSED_DIR / "tourism.csv")
+
+    schema = StructType([
+        StructField("City",           StringType(),  True),
+        StructField("Country",        StringType(),  True),
+        StructField("Year",           IntegerType(), True),
+        StructField("Month",          IntegerType(), True),
+        StructField("Tourism_Nights", DoubleType(),  True),
+        StructField("Tourism_Source", StringType(),  True),
+    ])
+
+    df = (
+        spark.read
+        .option("header", "true")
+        .option("mode", "DROPMALFORMED")
+        .schema(schema)
+        .csv(path)
+    )
+
+    df = (
+        df
+        .withColumnRenamed("City",           "city")
+        .withColumnRenamed("Country",        "country")
+        .withColumnRenamed("Year",           "year")
+        .withColumnRenamed("Month",          "month")
+        .withColumnRenamed("Tourism_Nights", "tourism_nights")
+        .withColumnRenamed("Tourism_Source", "tourism_source")
+    )
+
+    df = df.filter(F.col("city").isNotNull() & F.col("year").isNotNull())
+    df = add_metadata(df, "Eurostat_tourism", "tourism.csv")
+    log_stats(df, "Tourism")
+
+    write_bronze(df, f"{HDFS_BASE}/tourism_raw", ["year", "country"], mode)
+    repair_table(spark, "gtp_bronze", "bronze_tourism_raw")
+
+
+# ==============================================================================
+# INGESTA 18 — EU ETS (precio del carbono mensual)
+# CSV fuente: DatosProcesados/ets_price.csv
+# Columnas: Year, Month, ETS_Price_EUR, ETS_Source
+# Nota: Serie temporal global — sin city ni country. Particionado solo por year.
+# ==============================================================================
+def ingest_ets(spark, mode: str):
+    print("\n[18/20] Ingesta EU ETS (precio carbono) ...")
+    path = _local(PROCESSED_DIR / "ets_price.csv")
+
+    schema = StructType([
+        StructField("Year",          IntegerType(), True),
+        StructField("Month",         IntegerType(), True),
+        StructField("ETS_Price_EUR", DoubleType(),  True),
+        StructField("ETS_Source",    StringType(),  True),
+    ])
+
+    df = (
+        spark.read
+        .option("header", "true")
+        .option("mode", "DROPMALFORMED")
+        .schema(schema)
+        .csv(path)
+    )
+
+    df = (
+        df
+        .withColumnRenamed("Year",          "year")
+        .withColumnRenamed("Month",         "month")
+        .withColumnRenamed("ETS_Price_EUR", "ets_price_eur")
+        .withColumnRenamed("ETS_Source",    "ets_source")
+    )
+
+    df = df.filter(F.col("year").isNotNull())
+    df = add_metadata(df, "ETS_EUA", "ets_price.csv")
+    log_stats(df, "ETS")
+
+    # Particionado solo por year — no tiene ciudad ni país
+    write_bronze(df, f"{HDFS_BASE}/ets_raw", ["year"], mode)
+    repair_table(spark, "gtp_bronze", "bronze_ets_raw")
+
+
+# ==============================================================================
+# INGESTA 19 — EEA Air Quality (PM2.5 y PM10 anuales expandidos mensualmente)
+# CSV fuente: DatosProcesados/eea_aq.csv
+# Columnas: City, Country, Year, Month, PM25_Mean, PM10_Mean, AQ_Source
+# ==============================================================================
+def ingest_eea_aq(spark, mode: str):
+    print("\n[19/20] Ingesta EEA Air Quality (PM2.5/PM10) ...")
+    path = _local(PROCESSED_DIR / "eea_aq.csv")
+
+    schema = StructType([
+        StructField("City",      StringType(),  True),
+        StructField("Country",   StringType(),  True),
+        StructField("Year",      IntegerType(), True),
+        StructField("Month",     IntegerType(), True),
+        StructField("PM25_Mean", DoubleType(),  True),
+        StructField("PM10_Mean", DoubleType(),  True),
+        StructField("AQ_Source", StringType(),  True),
+    ])
+
+    df = (
+        spark.read
+        .option("header", "true")
+        .option("mode", "DROPMALFORMED")
+        .schema(schema)
+        .csv(path)
+    )
+
+    df = (
+        df
+        .withColumnRenamed("City",      "city")
+        .withColumnRenamed("Country",   "country")
+        .withColumnRenamed("Year",      "year")
+        .withColumnRenamed("Month",     "month")
+        .withColumnRenamed("PM25_Mean", "pm25_mean")
+        .withColumnRenamed("PM10_Mean", "pm10_mean")
+        .withColumnRenamed("AQ_Source", "aq_source")
+    )
+
+    df = df.filter(F.col("city").isNotNull() & F.col("year").isNotNull())
+    df = add_metadata(df, "EEA_AQ", "eea_aq.csv")
+    log_stats(df, "EEA_AQ")
+
+    write_bronze(df, f"{HDFS_BASE}/eea_aq_raw", ["year", "country"], mode)
+    repair_table(spark, "gtp_bronze", "bronze_eea_aq_raw")
+
+
+# ==============================================================================
+# INGESTA 20 — Población FUA (rellena bronze_eurostat_population_raw vacío)
+# CSV fuente: DatosProcesados/population.csv
+# Columnas: City, Country, Year, Population
+# ==============================================================================
+def ingest_population(spark, mode: str):
+    print("\n[20/20] Ingesta Población FUA (Eurostat population) ...")
+    path = _local(PROCESSED_DIR / "population.csv")
+
+    schema = StructType([
+        StructField("City",       StringType(),  True),
+        StructField("Country",    StringType(),  True),
+        StructField("Year",       IntegerType(), True),
+        StructField("Population", LongType(),    True),
+        StructField("Source",     StringType(),  True),  # columna extra en CSV
+    ])
+
+    df = (
+        spark.read
+        .option("header", "true")
+        .option("mode", "DROPMALFORMED")
+        .schema(schema)
+        .csv(path)
+    )
+
+    df = (
+        df
+        .withColumnRenamed("City",       "city_code")
+        .withColumnRenamed("Country",    "geo_code")
+        .withColumnRenamed("Year",       "year")
+        .withColumnRenamed("Population", "population")
+        # Campos del DDL no disponibles en este CSV simplificado
+        .withColumn("city_name",    F.lit(None).cast(StringType()))
+        .withColumn("indic_ur",     F.lit("POP"))
+        .withColumn("obs_flag",     F.lit(None).cast(StringType()))
+        .withColumn("_dataset_code", F.lit("population_extract"))
+    )
+
+    # Extraer país para la partición desde geo_code
+    df = df.withColumn("country", F.col("geo_code"))
+    df = df.filter(F.col("city_code").isNotNull() & F.col("year").isNotNull())
+    df = add_metadata(df, "Eurostat_API", "population.csv")
+    log_stats(df, "Population")
+
+    write_bronze(df, f"{HDFS_BASE}/eurostat_population_raw", ["year", "country"], mode)
+    repair_table(spark, "gtp_bronze", "bronze_eurostat_population_raw")
+
+
+# ==============================================================================
 # ORQUESTADOR
 # ==============================================================================
 INGESTORS = {
@@ -684,6 +1049,14 @@ INGESTORS = {
     "edgar_co2":    ingest_edgar_co2,
     "oecd":         ingest_oecd,
     "investeu":     ingest_investeu,
+    "modis_ndvi":   ingest_modis_ndvi,
+    "modis_lst":    ingest_modis_lst,
+    "ntl":          ingest_ntl,
+    "renewables":   ingest_renewables,
+    "tourism":      ingest_tourism,
+    "ets":          ingest_ets,
+    "eea_aq":       ingest_eea_aq,
+    "population":   ingest_population,
 }
 
 

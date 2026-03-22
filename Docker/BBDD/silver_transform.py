@@ -100,6 +100,30 @@ SOURCE_CATALOG = [
     (12, "InvestEU_EIB",   "InvestEU Final Recipients",   "PDF_SCRAPE",      "EIB / EU Commission",
      "https://www.eib.org/en/projects/beneficiaries/index.htm",
      "2021-present", "EU27",          "Annual",    "CC BY 4.0"),
+    (13, "MODIS_NDVI",     "MODIS Terra NDVI mensual",    "GEE_COLLECTION",  "NASA / Google",
+     "https://developers.google.com/earth-engine/datasets/catalog/MODIS_061_MOD13A3",
+     "2000-present", "European FUAs", "Monthly",   "CC BY 4.0"),
+    (14, "MODIS_LST",      "MODIS Terra LST dia/noche",   "GEE_COLLECTION",  "NASA / Google",
+     "https://developers.google.com/earth-engine/datasets/catalog/MODIS_061_MOD11A2",
+     "2000-present", "European FUAs", "Monthly",   "CC BY 4.0"),
+    (15, "DMSP_VIIRS_NTL", "Luces nocturnas DMSP+VIIRS",  "GEE_COLLECTION",  "NOAA / Google",
+     "https://developers.google.com/earth-engine/datasets/catalog/NOAA_VIIRS_DNB_MONTHLY_V1_VCMCFG",
+     "2000-present", "European FUAs", "Annual/Monthly", "CC BY 4.0"),
+    (16, "Eurostat_REN",   "Renovables Eurostat nrg_ind", "API_REST",        "Eurostat / EU",
+     "https://ec.europa.eu/eurostat/api/dissemination",
+     "2000-present", "EU27+EEA",      "Monthly",   "CC BY 4.0"),
+    (17, "Eurostat_TUR",   "Turismo pernoctaciones",      "API_REST",        "Eurostat / EU",
+     "https://ec.europa.eu/eurostat/api/dissemination",
+     "2000-present", "EU27+EEA",      "Monthly",   "CC BY 4.0"),
+    (18, "EEX_ETS",        "EU ETS precio carbono EEX",   "HTTP_DOWNLOAD",   "EEX / EU ETS",
+     "https://www.eex.com/en/market-data/environmental-markets/spot-market",
+     "2005-present", "EU27",          "Monthly",   "CC BY 4.0"),
+    (19, "EEA_AQ",         "EEA calidad aire PM2.5/PM10", "API_REST",        "EEA",
+     "https://www.eea.europa.eu/data-and-maps/data/aqereporting-9",
+     "2000-present", "European FUAs", "Monthly",   "CC BY 4.0"),
+    (20, "Eurostat_POP2",  "Eurostat Poblacion FUA corr", "API_REST",        "Eurostat / EU",
+     "https://ec.europa.eu/eurostat/api/dissemination",
+     "2000-present", "EU27+EEA",      "Annual",    "CC BY 4.0"),
 ]
 
 COUNTRY_NAMES = {
@@ -437,6 +461,46 @@ def build_fact_environmental(spark, pool, city_sk_map: dict):
     else:
         wc_pdf = None
 
+    # --- MODIS LST: mensual diurna + nocturna (2000+) ---
+    lst = read_bronze(spark, "modis_lst_raw")
+    lst_pdf = None
+    if lst is not None and "month" in lst.columns:
+        lst_cols = ["city", "year", "month"]
+        if "lst_day_c"   in lst.columns: lst_cols.append("lst_day_c")
+        if "lst_night_c" in lst.columns: lst_cols.append("lst_night_c")
+        lst_pdf = lst.select(*lst_cols).toPandas()
+
+    # --- Nighttime Lights DMSP+VIIRS (sk=15) ---
+    # DMSP (2000-2011): datos anuales, month=0 → expandir a todos los meses del año
+    # VIIRS (2012+): datos mensuales directos
+    # Normalización: factor por ciudad basado en overlap 2012-2013; fallback global 3.5
+    ntl = read_bronze(spark, "ntl_raw")
+    ntl_pdf = None
+    if ntl is not None:
+        ntl_cols = ["city", "year"]
+        if "month"    in ntl.columns: ntl_cols.append("month")
+        if "ntl_mean" in ntl.columns: ntl_cols.append("ntl_mean")
+        if "sensor"   in ntl.columns: ntl_cols.append("sensor")
+        ntl_pdf = ntl.select(*ntl_cols).toPandas()
+
+    # --- EEA Air Quality: PM2.5/PM10 mensual por ciudad (sk=19) ---
+    eea = read_bronze(spark, "eea_aq_raw")
+    eea_pdf = None
+    if eea is not None and "month" in eea.columns:
+        eea_cols = ["city", "year", "month"]
+        if "pm25_mean" in eea.columns: eea_cols.append("pm25_mean")
+        if "pm10_mean" in eea.columns: eea_cols.append("pm10_mean")
+        eea_pdf = eea.select(*eea_cols).toPandas()
+
+    # --- MODIS NDVI (sk=13): relleno pre-2004 donde S2/Landsat son NULL ---
+    modis_ndvi = read_bronze(spark, "modis_ndvi_raw")
+    modis_ndvi_pdf = None
+    if modis_ndvi is not None and "month" in modis_ndvi.columns:
+        modis_ndvi_pdf = modis_ndvi.select(
+            "city", "year", "month",
+            F.col("ndvi_mean").alias("modis_ndvi_mean")
+        ).toPandas()
+
     import pandas as pd
 
     # Merge mensual partiendo de S2
@@ -470,6 +534,79 @@ def build_fact_environmental(spark, pool, city_sk_map: dict):
     if wc_pdf is not None:
         wc_pdf = wc_pdf.rename(columns={"city": "city_code"})
         df = df.merge(wc_pdf, on=["city_code", "year"], how="left")
+
+    # Merge MODIS LST (mensual)
+    if lst_pdf is not None:
+        lst_pdf = lst_pdf.rename(columns={"city": "city_code"})
+        df = df.merge(lst_pdf, on=["city_code", "year", "month"], how="left")
+
+    # Merge EEA Air Quality (mensual)
+    if eea_pdf is not None:
+        eea_pdf = eea_pdf.rename(columns={"city": "city_code"})
+        df = df.merge(eea_pdf, on=["city_code", "year", "month"], how="left")
+
+    # Merge MODIS NDVI gap-fill (para años < 2004 donde ndvi_mean es NULL)
+    if modis_ndvi_pdf is not None:
+        modis_ndvi_pdf = modis_ndvi_pdf.rename(columns={"city": "city_code"})
+        df = df.merge(modis_ndvi_pdf, on=["city_code", "year", "month"], how="left")
+        # Rellenar ndvi_mean con MODIS solo donde S2/Landsat es NULL y year < 2004
+        mask_fill = df["ndvi_mean"].isna() & (df["year"] < 2004) & df["modis_ndvi_mean"].notna()
+        df.loc[mask_fill, "ndvi_mean"] = df.loc[mask_fill, "modis_ndvi_mean"]
+    if "modis_ndvi_mean" not in df.columns:
+        df["modis_ndvi_mean"] = None
+
+    # --- Procesamiento NTL: DMSP anual + VIIRS mensual, normalización overlap ---
+    if ntl_pdf is not None:
+        ntl_pdf = ntl_pdf.rename(columns={"city": "city_code"})
+        # Separar DMSP y VIIRS
+        if "sensor" in ntl_pdf.columns:
+            dmsp_pdf  = ntl_pdf[ntl_pdf["sensor"].str.upper().str.contains("DMSP", na=False)].copy()
+            viirs_pdf = ntl_pdf[ntl_pdf["sensor"].str.upper().str.contains("VIIRS", na=False)].copy()
+        elif "month" in ntl_pdf.columns:
+            # Sin columna sensor: month==0 → DMSP anual; month>0 → VIIRS mensual
+            dmsp_pdf  = ntl_pdf[ntl_pdf["month"] == 0].copy()
+            viirs_pdf = ntl_pdf[ntl_pdf["month"]  > 0].copy()
+        else:
+            dmsp_pdf  = ntl_pdf[ntl_pdf["year"] <= 2011].copy()
+            viirs_pdf = ntl_pdf[ntl_pdf["year"]  > 2011].copy()
+
+        # Calcular factor de normalización DMSP→VIIRS por ciudad (overlap 2012-2013)
+        ntl_factors = {}
+        if not dmsp_pdf.empty and not viirs_pdf.empty:
+            dmsp_ov  = dmsp_pdf[dmsp_pdf["year"].isin([2012, 2013])].groupby("city_code")["ntl_mean"].mean()
+            viirs_ov = viirs_pdf[viirs_pdf["year"].isin([2012, 2013])].groupby("city_code")["ntl_mean"].mean()
+            for city in dmsp_ov.index:
+                d_val = dmsp_ov.get(city)
+                v_val = viirs_ov.get(city)
+                if d_val and v_val and d_val > 0:
+                    ntl_factors[city] = float(v_val) / float(d_val)
+
+        GLOBAL_NTL_FACTOR = 3.5
+
+        # Expandir DMSP anual a mensual y aplicar factor
+        dmsp_monthly_rows = []
+        for _, r in dmsp_pdf.iterrows():
+            city_c = r["city_code"]
+            factor = ntl_factors.get(city_c, GLOBAL_NTL_FACTOR)
+            raw_val = safe_float(r.get("ntl_mean"))
+            norm_val = (raw_val * factor) if raw_val is not None else None
+            for m in range(1, 13):
+                dmsp_monthly_rows.append({"city_code": city_c, "year": int(r["year"]),
+                                          "month": m, "ntl_mean": norm_val})
+        dmsp_exp = pd.DataFrame(dmsp_monthly_rows) if dmsp_monthly_rows else pd.DataFrame(
+            columns=["city_code", "year", "month", "ntl_mean"])
+
+        # VIIRS mensual: usar directamente
+        viirs_clean = viirs_pdf[["city_code", "year", "month", "ntl_mean"]].copy() if "ntl_mean" in viirs_pdf.columns else pd.DataFrame(columns=["city_code", "year", "month", "ntl_mean"])
+
+        ntl_combined = pd.concat([dmsp_exp, viirs_clean], ignore_index=True)
+        ntl_combined = ntl_combined.rename(columns={"ntl_mean": "ntl_mean_norm"})
+        ntl_combined["year"]  = ntl_combined["year"].astype(int)
+        ntl_combined["month"] = ntl_combined["month"].astype(int)
+        df = df.merge(ntl_combined, on=["city_code", "year", "month"], how="left")
+        df = df.rename(columns={"ntl_mean_norm": "ntl_mean"})
+    else:
+        df["ntl_mean"] = None
 
     # --- Columnas derivadas ---
     # ndvi_yoy_change (respecto al mismo mes del anio anterior)
@@ -550,9 +687,11 @@ def build_fact_environmental(spark, pool, city_sk_map: dict):
              imperviousness_mean, tree_cover_pct, built_up_area_pct,
              wc_tree_pct, wc_built_pct, wc_crop_pct, wc_natural_pct,
              green_index, ndvi_yoy_change,
+             lst_day_c, lst_night_c, ntl_mean, pm25_mean, pm10_mean,
              source_sk_ndvi, source_sk_no2, source_sk_era5,
              _silver_load_date)
-        VALUES (%s,%s,%s,%s, %s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s,%s, %s,%s, %s,%s,%s, %s)
+        VALUES (%s,%s,%s,%s, %s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s,%s, %s,%s,
+                %s,%s,%s,%s,%s, %s,%s,%s, %s)
         ON DUPLICATE KEY UPDATE
             ndvi_mean=VALUES(ndvi_mean), ndvi_std=VALUES(ndvi_std),
             no2_mean=VALUES(no2_mean), no2_std=VALUES(no2_std),
@@ -564,6 +703,8 @@ def build_fact_environmental(spark, pool, city_sk_map: dict):
             wc_tree_pct=VALUES(wc_tree_pct), wc_built_pct=VALUES(wc_built_pct),
             wc_crop_pct=VALUES(wc_crop_pct), wc_natural_pct=VALUES(wc_natural_pct),
             green_index=VALUES(green_index), ndvi_yoy_change=VALUES(ndvi_yoy_change),
+            lst_day_c=VALUES(lst_day_c), lst_night_c=VALUES(lst_night_c),
+            ntl_mean=VALUES(ntl_mean), pm25_mean=VALUES(pm25_mean), pm10_mean=VALUES(pm10_mean),
             _silver_load_date=VALUES(_silver_load_date)
     """
 
@@ -583,6 +724,8 @@ def build_fact_environmental(spark, pool, city_sk_map: dict):
             get_col(row, "wc_tree_pct"), get_col(row, "wc_built_pct"),
             get_col(row, "wc_crop_pct"), safe_float(row.get("wc_natural_pct")),
             safe_float(row.get("green_index")), safe_float(row.get("ndvi_yoy_change")),
+            get_col(row, "lst_day_c"), get_col(row, "lst_night_c"),
+            get_col(row, "ntl_mean"), get_col(row, "pm25_mean"), get_col(row, "pm10_mean"),
             1, 2, 7,
             SILVER_LOAD_DATE,
         ))
@@ -627,14 +770,57 @@ def build_fact_economic(spark, pool, city_sk_map: dict):
     if "gdp_pps_per_capita" not in gdp_pdf.columns:
         gdp_pdf["gdp_pps_per_capita"] = None
 
-    # Eurostat population (si existe)
-    pop = read_bronze(spark, "eurostat_pop_raw")
+    # Eurostat population — prefer the new corrected table (sk=20), fallback to legacy
     pop_pdf = None
-    if pop is not None:
-        pop_cols = ["city_code" if "city_code" in pop.columns else "city", "year",
-                    "fua_population" if "fua_population" in pop.columns else pop.columns[-1]]
-        pop_pdf = pop.select(*pop_cols[:3]).toPandas()
-        pop_pdf.columns = ["city_code", "year", "fua_population"]
+    for pop_table in ("eurostat_population_raw", "eurostat_pop_raw"):
+        pop = read_bronze(spark, pop_table)
+        if pop is not None:
+            pop_col_city = "city_code" if "city_code" in pop.columns else "city"
+            pop_col_val  = ("fua_population" if "fua_population" in pop.columns
+                            else "population" if "population" in pop.columns
+                            else pop.columns[-1])
+            pop_pdf = pop.select(pop_col_city, "year", pop_col_val).toPandas()
+            pop_pdf.columns = ["city_code", "year", "fua_population"]
+            break
+
+    # Renovables mensuales por pais (sk=16)
+    ren = read_bronze(spark, "renewables_raw")
+    ren_pdf = None
+    if ren is not None:
+        ren_cols = [c for c in ren.columns if c in
+                    ["city", "city_code", "country_code", "country", "year", "month", "renewables_pct"]]
+        ren_pdf = ren.select(*ren_cols).toPandas()
+        if "city" in ren_pdf.columns and "country_code" not in ren_pdf.columns:
+            ren_pdf["country_code"] = ren_pdf["city"].str.rsplit("_", n=1).str[-1]
+        elif "city_code" in ren_pdf.columns and "country_code" not in ren_pdf.columns:
+            ren_pdf["country_code"] = ren_pdf["city_code"].str.rsplit("_", n=1).str[-1]
+        elif "country" in ren_pdf.columns and "country_code" not in ren_pdf.columns:
+            ren_pdf["country_code"] = ren_pdf["country"]
+        if "month" not in ren_pdf.columns:
+            ren_pdf["month"] = None
+
+    # Pernoctaciones turísticas mensuales (sk=17)
+    tur = read_bronze(spark, "tourism_raw")
+    tur_pdf = None
+    if tur is not None:
+        tur_cols = [c for c in tur.columns if c in
+                    ["city", "city_code", "country_code", "year", "month", "tourism_nights"]]
+        tur_pdf = tur.select(*tur_cols).toPandas()
+        if "city" in tur_pdf.columns and "country_code" not in tur_pdf.columns:
+            tur_pdf["country_code"] = tur_pdf["city"].str.rsplit("_", n=1).str[-1]
+        elif "city_code" in tur_pdf.columns and "country_code" not in tur_pdf.columns:
+            tur_pdf["country_code"] = tur_pdf["city_code"].str.rsplit("_", n=1).str[-1]
+        if "month" not in tur_pdf.columns:
+            tur_pdf["month"] = None
+
+    # EU ETS precio carbono mensual (sk=18) — solo 2005+; NULL 2000-2004 es correcto
+    ets = read_bronze(spark, "ets_raw")
+    ets_pdf = None
+    if ets is not None:
+        ets_cols = [c for c in ets.columns if c in ["year", "month", "ets_price_eur"]]
+        ets_pdf = ets.select(*ets_cols).toPandas()
+        if "month" not in ets_pdf.columns:
+            ets_pdf["month"] = None
 
     # EDGAR CO2 por pais
     edgar = read_bronze(spark, "edgar_co2_raw")
@@ -694,6 +880,54 @@ def build_fact_economic(spark, pool, city_sk_map: dict):
                     if not co2_rows.empty:
                         co2 = safe_float(co2_rows.iloc[0]["co2_country_kt"])
 
+                # fua_population anual (nueva fuente sk=20)
+                pop_val = None
+                if pop_pdf is not None:
+                    pop_mask = (pop_pdf["city_code"] == city_code) & (pop_pdf["year"] == year)
+                    pop_rows = pop_pdf[pop_mask]
+                    if not pop_rows.empty:
+                        pop_val = safe_int(pop_rows.iloc[0]["fua_population"])
+
+                # renovables mensuales (fallback: valor anual si month no disponible)
+                ren_val = None
+                if ren_pdf is not None:
+                    if ren_pdf["month"].isna().all():
+                        mask_r = (ren_pdf["country_code"] == country_code) & (ren_pdf["year"] == year)
+                    else:
+                        mask_r = (ren_pdf["country_code"] == country_code) & (ren_pdf["year"] == year) & (ren_pdf["month"] == month)
+                    r_rows = ren_pdf[mask_r]
+                    if not r_rows.empty:
+                        ren_val = safe_float(r_rows.iloc[0]["renewables_pct"])
+
+                # pernoctaciones turísticas mensuales
+                tur_val = None
+                if tur_pdf is not None:
+                    if tur_pdf["month"].isna().all():
+                        mask_t = (tur_pdf["country_code"] == country_code) & (tur_pdf["year"] == year)
+                    else:
+                        mask_t = (tur_pdf["country_code"] == country_code) & (tur_pdf["year"] == year) & (tur_pdf["month"] == month)
+                        if "city_code" in tur_pdf.columns:
+                            mask_city = (tur_pdf["city_code"] == city_code) & (tur_pdf["year"] == year) & (tur_pdf["month"] == month)
+                            city_rows = tur_pdf[mask_city]
+                            if not city_rows.empty:
+                                tur_val = safe_float(city_rows.iloc[0]["tourism_nights"])
+                                mask_t = None
+                    if tur_val is None and mask_t is not None:
+                        t_rows = tur_pdf[mask_t]
+                        if not t_rows.empty:
+                            tur_val = safe_float(t_rows.iloc[0]["tourism_nights"])
+
+                # precio EU ETS mensual — NULL para 2000-2004 (mercado no existía)
+                ets_val = None
+                if ets_pdf is not None and year >= 2005:
+                    if ets_pdf["month"].isna().all():
+                        mask_e = ets_pdf["year"] == year
+                    else:
+                        mask_e = (ets_pdf["year"] == year) & (ets_pdf["month"] == month)
+                    e_rows = ets_pdf[mask_e]
+                    if not e_rows.empty:
+                        ets_val = safe_float(e_rows.iloc[0]["ets_price_eur"])
+
                 monthly_rows.append((
                     int(city_sk), int(year), int(month),
                     int(year * 100 + month),    # date_sk
@@ -702,11 +936,15 @@ def build_fact_economic(spark, pool, city_sk_map: dict):
                     None,                       # gdp_pps_index
                     ln_gdp, ln_gdp_sq,
                     None,                       # gdp_growth_rate (se calcula post-hoc)
-                    None,                       # fua_population
-                    None,                       # population_density
+                    pop_val,                    # fua_population
+                    None,                       # population_density (requiere area)
                     None,                       # population_yoy_growth
                     5,                          # source_sk_gdp
                     6,                          # source_sk_pop
+                    co2,
+                    ren_val,                    # renewables_pct
+                    tur_val,                    # tourism_nights
+                    ets_val,                    # ets_price_eur (NULL 2000-2004)
                     SILVER_LOAD_DATE,
                 ))
 
@@ -718,7 +956,8 @@ def build_fact_economic(spark, pool, city_sk_map: dict):
         "gdp_pps_per_capita", "gdp_eur_per_capita", "gdp_pps_index",
         "ln_gdp_pps", "ln_gdp_pps_sq", "gdp_growth_rate",
         "fua_population", "population_density", "population_yoy_growth",
-        "source_sk_gdp", "source_sk_pop",
+        "source_sk_gdp", "source_sk_pop", "co2_country_kt",
+        "renewables_pct", "tourism_nights", "ets_price_eur",
         "_silver_load_date"
     ])
     mdf = mdf.sort_values(["city_sk", "year", "month"])
@@ -733,15 +972,21 @@ def build_fact_economic(spark, pool, city_sk_map: dict):
              gdp_pps_per_capita, gdp_eur_per_capita, gdp_pps_index,
              ln_gdp_pps, ln_gdp_pps_sq, gdp_growth_rate,
              fua_population, population_density, population_yoy_growth,
-             source_sk_gdp, source_sk_pop,
+             source_sk_gdp, source_sk_pop, co2_country_kt,
+             renewables_pct, tourism_nights, ets_price_eur,
              _silver_load_date)
-        VALUES (%s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s, %s)
+        VALUES (%s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s)
         ON DUPLICATE KEY UPDATE
             gdp_pps_per_capita=VALUES(gdp_pps_per_capita),
             gdp_eur_per_capita=VALUES(gdp_eur_per_capita),
             ln_gdp_pps=VALUES(ln_gdp_pps),
             ln_gdp_pps_sq=VALUES(ln_gdp_pps_sq),
             gdp_growth_rate=VALUES(gdp_growth_rate),
+            fua_population=VALUES(fua_population),
+            co2_country_kt=VALUES(co2_country_kt),
+            renewables_pct=VALUES(renewables_pct),
+            tourism_nights=VALUES(tourism_nights),
+            ets_price_eur=VALUES(ets_price_eur),
             _silver_load_date=VALUES(_silver_load_date)
     """
     rows_out = []
@@ -755,6 +1000,9 @@ def build_fact_economic(spark, pool, city_sk_map: dict):
             safe_int(r["fua_population"]), safe_float(r["population_density"]),
             safe_float(r["population_yoy_growth"]),
             int(r["source_sk_gdp"]), int(r["source_sk_pop"]),
+            safe_float(r["co2_country_kt"]),
+            safe_float(r["renewables_pct"]), safe_float(r["tourism_nights"]),
+            safe_float(r["ets_price_eur"]),
             SILVER_LOAD_DATE,
         ))
 

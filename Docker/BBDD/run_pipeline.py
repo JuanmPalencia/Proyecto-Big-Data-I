@@ -64,7 +64,7 @@ SCRIPT_ARGS = {
     "clustering": ["--k-min", "2", "--k-max", "8"],
     "ekc":        [],
     "xgboost":    ["--test-years", "2"],
-    "prophet":    ["--horizon", "5"],
+    "prophet":    ["--horizon", "10"],
 }
 
 # Descripcion de cada fase para el log

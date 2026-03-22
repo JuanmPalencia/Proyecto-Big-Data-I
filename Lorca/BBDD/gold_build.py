@@ -124,7 +124,9 @@ def build_fact_kuznets(pool):
         SELECT city_sk, year, month, date_sk,
                ndvi_mean, ndvi_yoy_change,
                no2_mean, imperviousness_mean, green_index,
-               temp_mean_c
+               temp_mean_c,
+               lst_day_c, lst_night_c, ntl_mean,
+               pm25_mean, pm10_mean
         FROM fact_environmental
     """)
 
@@ -173,7 +175,8 @@ def build_fact_kuznets(pool):
     eco_rows = read_silver(pool, """
         SELECT city_sk, year, month,
                gdp_pps_per_capita, ln_gdp_pps, ln_gdp_pps_sq,
-               gdp_growth_rate, fua_population
+               gdp_growth_rate, fua_population,
+               renewables_pct, tourism_nights, ets_price_eur
         FROM fact_economic
     """)
     eco_df = pd.DataFrame(eco_rows) if eco_rows else pd.DataFrame()
@@ -223,11 +226,16 @@ def build_fact_kuznets(pool):
     # ------------------------------------------------------------------
     fk = env_df.merge(city_df, on="city_sk", how="left")
 
+    for col in ["lst_day_c", "lst_night_c", "ntl_mean", "pm25_mean", "pm10_mean"]:
+        if col not in fk.columns:
+            fk[col] = None
+
     if not eco_df.empty:
         fk = fk.merge(eco_df, on=["city_sk", "year", "month"], how="left")
     else:
         for col in ["gdp_pps_per_capita", "ln_gdp_pps", "ln_gdp_pps_sq",
-                    "gdp_growth_rate", "fua_population"]:
+                    "gdp_growth_rate", "fua_population",
+                    "renewables_pct", "tourism_nights", "ets_price_eur"]:
             fk[col] = None
 
     if not policy_df.empty and "country_code" in fk.columns:
@@ -245,7 +253,14 @@ def build_fact_kuznets(pool):
     # ------------------------------------------------------------------
     # Columnas de negocio
     # ------------------------------------------------------------------
-    fk["investment_score"] = (fk["green_index"].fillna(0.0) * 100.0).round(2)
+    # Investment score: composite 0-100 from multiple signals
+    score_env = fk["green_index"].fillna(0.0) * 60.0          # 0-60 (NDVI-based green index)
+    score_ren = (fk["renewables_pct"].fillna(0.0) / 100.0) * 20.0  # 0-20 (renewables %)
+    pm25_raw  = fk["pm25_mean"].fillna(15.0).clip(lower=0.0)
+    score_air = (10.0 - (pm25_raw / 35.0 * 10.0)).clip(0.0, 10.0)  # 0-10 (air quality bonus)
+    ets_raw   = fk["ets_price_eur"].fillna(0.0).clip(lower=0.0)
+    score_ets = (ets_raw / 100.0 * 10.0).clip(0.0, 10.0)           # 0-10 (ETS price signal)
+    fk["investment_score"] = (score_env + score_ren + score_air + score_ets).clip(0.0, 100.0).round(2)
     fk["investment_recommendation"] = fk["investment_score"].apply(
         lambda s: (
             "STRONG_BUY" if s >= 75
@@ -269,8 +284,10 @@ def build_fact_kuznets(pool):
              ndvi_mean, ndvi_trend_slope, ndvi_yoy_change,
              no2_mean, imperviousness_mean, green_index,
              temp_mean_c, co2_country_kt,
+             lst_day_c, lst_night_c, ntl_mean, pm25_mean, pm10_mean,
              gdp_pps_per_capita, ln_gdp_pps, ln_gdp_pps_sq,
              gdp_growth_rate, fua_population,
+             renewables_pct, tourism_nights, ets_price_eur,
              cluster_id, cluster_label, cluster_silhouette, distance_to_centroid,
              ekc_beta1, ekc_beta2, ekc_alpha,
              ekc_turning_point_y, ekc_r_squared, ekc_shape,
@@ -287,8 +304,10 @@ def build_fact_kuznets(pool):
             %s,%s,%s,
             %s,%s,%s,
             %s,%s,
+            %s,%s,%s,%s,%s,
             %s,%s,%s,
             %s,%s,
+            %s,%s,%s,
             %s,%s,%s,%s,
             %s,%s,%s,
             %s,%s,%s,
@@ -309,9 +328,17 @@ def build_fact_kuznets(pool):
             green_index=VALUES(green_index),
             temp_mean_c=VALUES(temp_mean_c),
             co2_country_kt=VALUES(co2_country_kt),
+            lst_day_c=VALUES(lst_day_c),
+            lst_night_c=VALUES(lst_night_c),
+            ntl_mean=VALUES(ntl_mean),
+            pm25_mean=VALUES(pm25_mean),
+            pm10_mean=VALUES(pm10_mean),
             gdp_pps_per_capita=VALUES(gdp_pps_per_capita),
             ln_gdp_pps=VALUES(ln_gdp_pps),
             ln_gdp_pps_sq=VALUES(ln_gdp_pps_sq),
+            renewables_pct=VALUES(renewables_pct),
+            tourism_nights=VALUES(tourism_nights),
+            ets_price_eur=VALUES(ets_price_eur),
             eps_index=VALUES(eps_index),
             investeu_total_eur=VALUES(investeu_total_eur),
             investment_score=VALUES(investment_score),
@@ -345,12 +372,20 @@ def build_fact_kuznets(pool):
             safe_float(row.get("green_index")),
             safe_float(row.get("temp_mean_c")),
             safe_float(row.get("co2_country_kt")),
+            safe_float(row.get("lst_day_c")),
+            safe_float(row.get("lst_night_c")),
+            safe_float(row.get("ntl_mean")),
+            safe_float(row.get("pm25_mean")),
+            safe_float(row.get("pm10_mean")),
             # economic
             safe_float(row.get("gdp_pps_per_capita")),
             safe_float(row.get("ln_gdp_pps")),
             safe_float(row.get("ln_gdp_pps_sq")),
             safe_float(row.get("gdp_growth_rate")),
             safe_int(row.get("fua_population")),
+            safe_float(row.get("renewables_pct")),
+            safe_float(row.get("tourism_nights")),
+            safe_float(row.get("ets_price_eur")),
             # clustering placeholders (NULL until models run)
             None, None, None, None,
             # EKC placeholders

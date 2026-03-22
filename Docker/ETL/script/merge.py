@@ -51,7 +51,7 @@ def load_environmental_data():
     # Este es nuestro dataset base. Si no tenemos vegetación, no tenemos análisis.
     s2_path = config.INPUT_DIR_PROCESSED / "sentinel2.csv"
     if s2_path.exists():
-        df_s2 = pd.read_csv(s2_path)
+        df_s2 = pd.read_csv(s2_path, on_bad_lines="skip")
         # Agregamos por año para simplificar la serie temporal.
         # Nos interesa la tendencia macro, no la variación mensual.
         df_env = df_s2.groupby(["City", "Year"])["NDVI_Mean"].mean().reset_index()

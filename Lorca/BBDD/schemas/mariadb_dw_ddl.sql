@@ -97,7 +97,7 @@ CREATE TABLE dim_source (
     _last_updated       DATE,
     PRIMARY KEY (source_sk),
     UNIQUE KEY uq_source_code (source_code)
-) ENGINE=InnoDB COMMENT='Dimensión Fuente — SCD Tipo 1 — 12 fuentes del pipeline';
+) ENGINE=InnoDB COMMENT='Dimensión Fuente — SCD Tipo 1 — 20 fuentes del pipeline (sk 1-20)';
 
 -- ----------------------------------------------------------------------------
 -- DIM_COMPANY — SCD Tipo 2 (historial de versiones)
@@ -197,13 +197,21 @@ CREATE TABLE fact_environmental (
     -- Indicadores derivados
     green_index             DOUBLE                    COMMENT 'Índice verde compuesto GTP ∈ [0,1]',
     ndvi_yoy_change         DOUBLE                    COMMENT 'Cambio NDVI vs mismo mes año anterior',
+    -- MODIS LST (Land Surface Temperature) — isla de calor urbano 2000+
+    lst_day_c               DOUBLE                    COMMENT 'LST diurna mensual MODIS (°C)',
+    lst_night_c             DOUBLE                    COMMENT 'LST nocturna mensual MODIS (°C)',
+    -- Nighttime Lights — DMSP (norm.) 2000-2011 + VIIRS 2012+
+    ntl_mean                DOUBLE                    COMMENT 'Luces nocturnas normalizadas (nW/cm2/sr equiv.)',
+    -- EEA Air Quality — PM2.5/PM10 2000+
+    pm25_mean               DOUBLE                    COMMENT 'PM2.5 medio mensual (µg/m³)',
+    pm10_mean               DOUBLE                    COMMENT 'PM10 medio mensual (µg/m³)',
     _silver_load_date       DATE,
     PRIMARY KEY (city_sk, year, month),
     INDEX idx_fe_date       (date_sk),
     INDEX idx_fe_city_year  (city_sk, year),
     INDEX idx_fe_year_month (year, month)
 ) ENGINE=InnoDB
-  COMMENT='Hechos ambientales mensuales por ciudad — NDVI + NO2 + ERA5 + HRL'
+  COMMENT='Hechos ambientales mensuales por ciudad — NDVI + NO2 + ERA5 + HRL + LST + NTL + AQ'
 PARTITION BY RANGE (year) (
     PARTITION p2004 VALUES LESS THAN (2005),
     PARTITION p2005 VALUES LESS THAN (2006),
@@ -248,17 +256,25 @@ CREATE TABLE fact_economic (
     ln_gdp_pps              DOUBLE                    COMMENT 'ln(gdp_pps_per_capita) — variable X de la EKC',
     ln_gdp_pps_sq           DOUBLE                    COMMENT '[ln(gdp_pps)]² — término cuadrático EKC',
     gdp_growth_rate         DOUBLE                    COMMENT 'Tasa crecimiento YoY (%)',
-    -- Población (interpolación lineal mensual)
-    fua_population          BIGINT,
-    population_density      DOUBLE                    COMMENT 'hab/km²',
+    -- Población (interpolación lineal mensual — ahora poblada desde bronze sk=20)
+    fua_population          BIGINT                    COMMENT 'Población FUA Eurostat (sk=20)',
+    population_density      DOUBLE                    COMMENT 'hab/km² (si fua_area_km2 disponible)',
     population_yoy_growth   DOUBLE,
+    -- EDGAR CO2 nacional anual (repetido mensualmente)
+    co2_country_kt          DOUBLE                    COMMENT 'Emisiones CO2 país (kt CO2) — EDGAR v8',
+    -- Electricidad renovable mensual por país (Eurostat sk=16)
+    renewables_pct          DOUBLE                    COMMENT '% electricidad renovable mensual (Eurostat)',
+    -- Pernoctaciones turísticas mensuales (Eurostat sk=17)
+    tourism_nights          DOUBLE                    COMMENT 'Pernoctaciones turísticas mensuales',
+    -- Precio EU ETS mensual (NULL 2000-2004: mercado no existía hasta ene-2005)
+    ets_price_eur           DOUBLE                    COMMENT 'Precio EU ETS (€/tCO2), NULL 2000-2004',
     _silver_load_date       DATE,
     PRIMARY KEY (city_sk, year, month),
     INDEX idx_eco_date      (date_sk),
     INDEX idx_eco_city_year (city_sk, year),
     INDEX idx_eco_year      (year)
 ) ENGINE=InnoDB
-  COMMENT='Hechos macroeconómicos mensuales por ciudad — GDP + Población Eurostat (interpolados)'
+  COMMENT='Hechos macroeconómicos mensuales por ciudad — GDP + Población + Renovables + Turismo + ETS'
 PARTITION BY RANGE (year) (
     PARTITION p2004 VALUES LESS THAN (2005),
     PARTITION p2005 VALUES LESS THAN (2006),
@@ -419,12 +435,21 @@ CREATE TABLE fact_kuznets (
     green_index                 DOUBLE,
     temp_mean_c                 DOUBLE,
     co2_country_kt              DOUBLE,
+    -- MODIS LST, NTL, Air Quality (from Silver)
+    lst_day_c               DOUBLE                    COMMENT 'LST diurna mensual MODIS (°C)',
+    lst_night_c             DOUBLE                    COMMENT 'LST nocturna mensual MODIS (°C)',
+    ntl_mean                DOUBLE                    COMMENT 'Luces nocturnas normalizadas (nW/cm2/sr equiv.)',
+    pm25_mean               DOUBLE                    COMMENT 'PM2.5 medio mensual (µg/m³)',
+    pm10_mean               DOUBLE                    COMMENT 'PM10 medio mensual (µg/m³)',
     -- Indicadores económicos
     gdp_pps_per_capita          DOUBLE,
     ln_gdp_pps                  DOUBLE,
     ln_gdp_pps_sq               DOUBLE,
     gdp_growth_rate             DOUBLE,
     fua_population              BIGINT,
+    renewables_pct          DOUBLE                    COMMENT '% electricidad renovable mensual (Eurostat)',
+    tourism_nights          DOUBLE                    COMMENT 'Pernoctaciones turísticas mensuales',
+    ets_price_eur           DOUBLE                    COMMENT 'Precio EU ETS (€/tCO2), NULL 2000-2004',
     -- Clustering (K-Means)
     cluster_id                  INT,
     cluster_label               VARCHAR(100),

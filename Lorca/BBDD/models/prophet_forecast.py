@@ -128,7 +128,7 @@ def fit_prophet_for_city(city_df: pd.DataFrame, city_sk: int,
         )
         model.fit(df_prophet)
 
-        future   = model.make_future_dataframe(periods=horizon_years * 12, freq="MS")
+        future   = model.make_future_dataframe(periods=horizon_years * 12 + 2, freq="MS")
         forecast = model.predict(future)
 
         # In-sample
@@ -137,9 +137,11 @@ def fit_prophet_for_city(city_df: pd.DataFrame, city_sk: int,
         fitted    = in_sample.set_index("ds")["yhat"]
         common    = actual.index.intersection(fitted.index)
         if len(common) > 0:
+            # clip(lower=0.05) evita MAPE explosivo en ciudades con NDVI
+            # bajo o negativo (costeras, muy urbanizadas).
             mape = float(
                 np.abs((actual.loc[common] - fitted.loc[common]) /
-                       actual.loc[common].clip(lower=1e-6)).mean() * 100
+                       actual.loc[common].clip(lower=0.05)).mean() * 100
             )
         else:
             mape = None
@@ -155,9 +157,10 @@ def fit_prophet_for_city(city_df: pd.DataFrame, city_sk: int,
                 return None, None, None
             return float(row["yhat"].values[0]), float(row["yhat_lower"].values[0]), float(row["yhat_upper"].values[0])
 
-        f1y_mid, f1y_lo, f1y_hi = forecast_at(12)
-        f3y_mid, f3y_lo, f3y_hi = forecast_at(36)
-        f5y_mid, f5y_lo, f5y_hi = forecast_at(60)
+        f1y_mid, f1y_lo, f1y_hi   = forecast_at(12)
+        f3y_mid, f3y_lo, f3y_hi   = forecast_at(36)
+        f5y_mid, f5y_lo, f5y_hi   = forecast_at(60)
+        f10y_mid, f10y_lo, f10y_hi = forecast_at(120)
 
         # Turning year: primer anio futuro donde la tendencia deja de caer
         if len(future_only) > 0:
@@ -186,17 +189,20 @@ def fit_prophet_for_city(city_df: pd.DataFrame, city_sk: int,
             }
 
         return {
-            "city_sk":                city_sk,
-            "mape":                   mape,
-            "forecast_1y":            f1y_mid,
-            "forecast_3y":            f3y_mid,
-            "forecast_5y":            f5y_mid,
-            "forecast_lower_95_1y":   f1y_lo,
-            "forecast_upper_95_1y":   f1y_hi,
-            "forecast_lower_95_5y":   f5y_lo,
-            "forecast_upper_95_5y":   f5y_hi,
-            "turning_year":           turning_year,
-            "in_sample_by_ym":        in_sample_by_ym,
+            "city_sk":                 city_sk,
+            "mape":                    mape,
+            "forecast_1y":             f1y_mid,
+            "forecast_3y":             f3y_mid,
+            "forecast_5y":             f5y_mid,
+            "forecast_10y":            f10y_mid,
+            "forecast_lower_95_1y":    f1y_lo,
+            "forecast_upper_95_1y":    f1y_hi,
+            "forecast_lower_95_5y":    f5y_lo,
+            "forecast_upper_95_5y":    f5y_hi,
+            "forecast_lower_95_10y":   f10y_lo,
+            "forecast_upper_95_10y":   f10y_hi,
+            "turning_year":            turning_year,
+            "in_sample_by_ym":         in_sample_by_ym,
         }
 
     except Exception as e:
@@ -216,6 +222,7 @@ def update_mariadb(pool, results_by_city: dict):
         SET prophet_ndvi_forecast_1y=%s,
             prophet_ndvi_forecast_3y=%s,
             prophet_ndvi_forecast_5y=%s,
+            prophet_ndvi_forecast_10y=%s,
             prophet_turning_year=%s,
             prophet_forecast_lower_95=%s,
             prophet_forecast_upper_95=%s
@@ -228,6 +235,7 @@ def update_mariadb(pool, results_by_city: dict):
                 safe_float(r.get("forecast_1y")),
                 safe_float(r.get("forecast_3y")),
                 safe_float(r.get("forecast_5y")),
+                safe_float(r.get("forecast_10y")),
                 safe_int(r.get("turning_year")),
                 safe_float(r.get("forecast_lower_95_5y")),
                 safe_float(r.get("forecast_upper_95_5y")),
@@ -242,11 +250,12 @@ def update_mariadb(pool, results_by_city: dict):
         INSERT INTO model_results
             (city_sk, year, month,
              prophet_ndvi_fitted, prophet_trend, prophet_seasonality,
-             prophet_forecast_1y, prophet_forecast_3y, prophet_forecast_5y,
+             prophet_forecast_1y, prophet_forecast_3y, prophet_forecast_5y, prophet_forecast_10y,
              prophet_lower_95_5y, prophet_upper_95_5y,
+             prophet_lower_95_10y, prophet_upper_95_10y,
              prophet_turning_year, prophet_mape,
              _model_run_date, _pipeline_version)
-        VALUES (%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s, %s,%s, %s,%s)
+        VALUES (%s,%s,%s, %s,%s,%s, %s,%s,%s,%s, %s,%s, %s,%s, %s,%s, %s,%s)
         ON DUPLICATE KEY UPDATE
             prophet_ndvi_fitted=VALUES(prophet_ndvi_fitted),
             prophet_trend=VALUES(prophet_trend),
@@ -254,8 +263,11 @@ def update_mariadb(pool, results_by_city: dict):
             prophet_forecast_1y=VALUES(prophet_forecast_1y),
             prophet_forecast_3y=VALUES(prophet_forecast_3y),
             prophet_forecast_5y=VALUES(prophet_forecast_5y),
+            prophet_forecast_10y=VALUES(prophet_forecast_10y),
             prophet_lower_95_5y=VALUES(prophet_lower_95_5y),
             prophet_upper_95_5y=VALUES(prophet_upper_95_5y),
+            prophet_lower_95_10y=VALUES(prophet_lower_95_10y),
+            prophet_upper_95_10y=VALUES(prophet_upper_95_10y),
             prophet_turning_year=VALUES(prophet_turning_year),
             prophet_mape=VALUES(prophet_mape),
             _model_run_date=VALUES(_model_run_date)
@@ -281,8 +293,11 @@ def update_mariadb(pool, results_by_city: dict):
                 safe_float(r.get("forecast_1y")),
                 safe_float(r.get("forecast_3y")),
                 safe_float(r.get("forecast_5y")),
+                safe_float(r.get("forecast_10y")),
                 safe_float(r.get("forecast_lower_95_5y")),
                 safe_float(r.get("forecast_upper_95_5y")),
+                safe_float(r.get("forecast_lower_95_10y")),
+                safe_float(r.get("forecast_upper_95_10y")),
                 safe_int(r.get("turning_year")),
                 safe_float(r.get("mape")),
                 MODEL_RUN_DATE, MODEL_VERSION,
@@ -344,7 +359,24 @@ def main():
     if results_by_city:
         update_mariadb(pool, results_by_city)
 
-    # 4. Resumen
+    # 4. Persistir fact_kuznets y model_results en HDFS Gold
+    from hdfs_writer import write_df_to_hdfs
+    fk_rows = pool.execute_query("""
+        SELECT fk.*, dc.country_code AS country
+        FROM fact_kuznets fk
+        JOIN dim_city dc ON fk.city_sk = dc.city_sk
+    """)
+    if fk_rows:
+        write_df_to_hdfs(pd.DataFrame(fk_rows),
+                         "hdfs:///user/gtp/gold/fact_kuznets/",
+                         partition_cols=["country"])
+    mr_rows = pool.execute_query("SELECT * FROM model_results")
+    if mr_rows:
+        write_df_to_hdfs(pd.DataFrame(mr_rows),
+                         "hdfs:///user/gtp/gold/model_results/",
+                         partition_cols=["year"])
+
+    # 5. Resumen
     if results_by_city:
         mapes = [(c, r.get("mape") or 999) for c, r in results_by_city.items() if r.get("mape")]
         mapes.sort(key=lambda x: x[1])

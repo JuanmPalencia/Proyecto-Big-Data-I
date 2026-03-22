@@ -54,7 +54,7 @@ def load_environmental_data():
     # --- 1. Sentinel-2 (NDVI) — dataset base ---
     s2_path = config.INPUT_DIR_PROCESSED / "sentinel2.csv"
     if s2_path.exists():
-        df_s2 = pd.read_csv(s2_path)
+        df_s2 = pd.read_csv(s2_path, on_bad_lines="skip")
         df_env = df_s2.groupby(["City", "Year"])["NDVI_Mean"].mean().reset_index()
     else:
         print(f"[WARN] No encontré {s2_path.name}. Iniciando con DataFrame vacío.")

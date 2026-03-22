@@ -61,19 +61,24 @@ class MariaDBPool:
             cursor.close()
             conn.close()
 
-    def execute_many(self, query, data):
-        """Inserción masiva con executemany — para carga de facts."""
-        conn   = self.get_connection()
-        cursor = conn.cursor()
-        try:
-            cursor.executemany(query, data)
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            cursor.close()
-            conn.close()
+    def execute_many(self, query, data, chunk_size=500):
+        """Inserción masiva con executemany — para carga de facts.
+        Procesa en chunks para evitar que MariaDB cierre la conexión
+        por paquetes demasiado grandes (max_allowed_packet / wait_timeout).
+        """
+        for i in range(0, len(data), chunk_size):
+            chunk = data[i:i + chunk_size]
+            conn   = self.get_connection()
+            cursor = conn.cursor()
+            try:
+                cursor.executemany(query, chunk)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                cursor.close()
+                conn.close()
 
     def execute_write(self, query, params=None):
         """INSERT / UPDATE / DELETE de una sola fila."""

@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS fact_kuznets (
     prophet_ndvi_forecast_1y    DOUBLE,
     prophet_ndvi_forecast_3y    DOUBLE,
     prophet_ndvi_forecast_5y    DOUBLE,
+    prophet_ndvi_forecast_10y   DOUBLE,
     prophet_turning_year        INTEGER,
     prophet_forecast_lower_95   DOUBLE,
     prophet_forecast_upper_95   DOUBLE,
@@ -113,6 +114,16 @@ CREATE TABLE IF NOT EXISTS fact_kuznets (
     -- Inversión verde EIB/InvestEU
     investeu_ops_count      INTEGER,    -- Nº operaciones InvestEU en el país y año
     investeu_total_eur      DOUBLE,     -- Importe total financiación InvestEU (EUR)
+
+    -- Nuevas fuentes (Bronze sk 13-20) — media/suma anual por ciudad
+    lst_day_annual_mean_c   DOUBLE      COMMENT 'LST diurna media anual MODIS (°C) — isla de calor',
+    lst_night_annual_mean_c DOUBLE      COMMENT 'LST nocturna media anual MODIS (°C)',
+    ntl_annual_mean         DOUBLE      COMMENT 'Luces nocturnas media anual normalizada (DMSP+VIIRS)',
+    pm25_annual_mean        DOUBLE      COMMENT 'PM2.5 media anual (µg/m³) — EEA',
+    pm10_annual_mean        DOUBLE      COMMENT 'PM10 media anual (µg/m³) — EEA',
+    renewables_pct          DOUBLE      COMMENT '% electricidad renovable (media anual del país)',
+    tourism_nights          DOUBLE      COMMENT 'Pernoctaciones turísticas anuales',
+    ets_price_eur_mean      DOUBLE      COMMENT 'Precio EU ETS medio anual (€/tCO2), NULL 2000-2004'
 
     -- Financiero
     fin_tickers             TEXT,
@@ -243,8 +254,11 @@ CREATE TABLE IF NOT EXISTS model_results (
     prophet_forecast_1y     DOUBLE,
     prophet_forecast_3y     DOUBLE,
     prophet_forecast_5y     DOUBLE,
+    prophet_forecast_10y    DOUBLE,
     prophet_lower_95_5y     DOUBLE,
     prophet_upper_95_5y     DOUBLE,
+    prophet_lower_95_10y    DOUBLE,
+    prophet_upper_95_10y    DOUBLE,
     prophet_turning_year    INTEGER,
     prophet_mape            DOUBLE,
 
