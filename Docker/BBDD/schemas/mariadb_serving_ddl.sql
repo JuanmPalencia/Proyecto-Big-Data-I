@@ -123,7 +123,7 @@ CREATE TABLE IF NOT EXISTS fact_kuznets (
     pm10_annual_mean        DOUBLE      COMMENT 'PM10 media anual (µg/m³) — EEA',
     renewables_pct          DOUBLE      COMMENT '% electricidad renovable (media anual del país)',
     tourism_nights          DOUBLE      COMMENT 'Pernoctaciones turísticas anuales',
-    ets_price_eur_mean      DOUBLE      COMMENT 'Precio EU ETS medio anual (€/tCO2), NULL 2000-2004'
+    ets_price_eur_mean      DOUBLE      COMMENT 'Precio EU ETS medio anual (€/tCO2), NULL 2000-2004',
 
     -- Financiero
     fin_tickers             TEXT,
