@@ -1363,8 +1363,8 @@ spark-submit run_pipeline.py --skip-gold          # Saltar gold_build
 
 **Propósito:** proporcionar consultas <10ms para la API Flask y herramientas BI. HDFS + Spark son excelentes para batch pero lentos para queries interactivas.
 
-**Servidor:** `10.151.30.2:3306` — MariaDB del cluster Lorca (UEM)
-**BD:** `bd_rvm_gtp` | **Usuario:** `bd_rvm_gtp` | **Contraseña:** `Sol2026A`
+**Servidor:** configurado por variables de entorno `PG_HOST` y `PG_PORT`
+**BD:** definida localmente en `PG_DB` | **Usuario:** definido localmente en `PG_USER` | **Contraseña:** definida localmente en `PG_PASSWORD`
 **DDL:** `Lorca/BBDD/schemas/mariadb_serving_ddl.sql`
 
 > Nota: el script se llama `export_to_postgres.py` por razones históricas (nombre legacy). Escribe a MariaDB, no a PostgreSQL.
@@ -1398,7 +1398,7 @@ investeu_total_eur  DOUBLE,     -- Importe total financiación InvestEU (EUR)
 **Conexión Power BI:**
 ```
 Inicio > Obtener datos > Base de datos > MySQL
-Servidor: 10.151.30.2:3306   Base de datos: bd_rvm_gtp
+Servidor: definido localmente en `PG_HOST:PG_PORT`   Base de datos: definida localmente en `PG_DB`
 ```
 
 ### 16.2 Modos de exportación
@@ -1416,11 +1416,11 @@ spark-submit export_to_postgres.py --table city_ranking --mode spark
 
 **Variables de entorno requeridas (en Lorca/.env):**
 ```bash
-PG_HOST=10.151.30.2
+PG_HOST=your-mariadb-host
 PG_PORT=3306
-PG_DB=bd_rvm_gtp
-PG_USER=bd_rvm_gtp
-PG_PASSWORD=Sol2026A
+PG_DB=your_database_name
+PG_USER=your_database_user
+PG_PASSWORD=replace-with-real-password
 ```
 
 ---
@@ -1539,7 +1539,7 @@ El CSV maestro generado por `merge.py` (input de `bronze_ingest.py`) contiene:
 
 | Fecha | Fichero | Bug | Fix |
 |-------|---------|-----|-----|
-| 2026-03-11 | `bronze_ingest.py` | Ruta hardcoded `/home/223B3336juan/...` | `Path(__file__).resolve().parent.parent / "ETL" / "script"` |
+| 2026-03-11 | `bronze_ingest.py` | Ruta hardcoded dependiente del usuario local | `Path(__file__).resolve().parent.parent / "ETL" / "script"` |
 | 2026-03-11 | `silver_transform.py` | Misma ruta hardcoded en `build_dim_city()` | Misma fix portable |
 | 2026-03-11 | `prophet_forecast.py` | `ds` declarado `StringType()` en schema UDF pero Spark produce `DateType` → crash en serialización | Cambiar a `DateType()` + añadir import |
 | 2026-03-11 | `clustering.py` | Ternary DataFrameWriter `(...).parquet(...)` no verificaba columna `country` antes de `partitionBy` | Reemplazar con `if "year" in cols and "country" in cols` explícito |

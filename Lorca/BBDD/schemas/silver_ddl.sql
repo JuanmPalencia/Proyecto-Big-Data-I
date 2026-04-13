@@ -14,7 +14,7 @@
 
 CREATE DATABASE IF NOT EXISTS gtp_silver
   COMMENT 'Capa Silver GTP: Star Schema Kimball, datos curados y normalizados'
-  LOCATION 'hdfs:///user/gtp/silver';
+    LOCATION 'hdfs:///user/gtp/silver';
 
 USE gtp_silver;
 
@@ -64,7 +64,6 @@ CREATE TABLE IF NOT EXISTS dim_company (
     company_name        STRING    COMMENT 'Nombre corto de la empresa',
     sector              STRING    COMMENT 'Sector GICS (ej: Energy, Utilities)',
     industry            STRING    COMMENT 'Industria GICS (ej: Renewable Electricity)',
-    country_code        STRING    COMMENT 'Código ISO-2 del país de cotización',
     country_name        STRING    COMMENT 'País de cotización (nombre completo)',
     stock_exchange      STRING    COMMENT 'Bolsa donde cotiza (ej: MC, PA, DE, L)',
     esg_classification  STRING    COMMENT 'Clasificación ESG interna GTP (GREEN/TRANSITION/MONITOR)',

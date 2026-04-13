@@ -80,9 +80,9 @@ PASO 6 — Conectar Power BI / Tableau
 ------------------------------------------------------------
   Tipo:       MySQL / MariaDB
   Servidor:   localhost:3306
-  BD:         bd_rvm_gtp
-  Usuario:    bd_rvm_gtp
-  Contraseña: Sol2026A
+  BD:         la definida en Docker/.env
+  Usuario:    el definido en Docker/.env
+  Contraseña: la definida en Docker/.env
 
 ------------------------------------------------------------
 COMANDOS ÚTILES
@@ -103,7 +103,7 @@ COMANDOS ÚTILES
     docker exec -it gtp-namenode hdfs dfs -ls /user/gtp/
 
   Acceder a MariaDB:
-    docker exec -it gtp-mariadb mariadb -u bd_rvm_gtp -pSol2026A bd_rvm_gtp
+    docker exec -it gtp-mariadb mariadb -u "$PG_USER" -p"$PG_PASSWORD" "$PG_DB"
 
   Reconstruir imagen tras cambios en código:
     docker compose build

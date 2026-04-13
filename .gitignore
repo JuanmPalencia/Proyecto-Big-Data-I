@@ -19,3 +19,11 @@ venv/
 # IDEs
 .vscode/
 .idea/
+
+# Secretos y datos locales
+**/.env
+**/Web/data/*.txt
+*.docx
+entregaFinal/GTP_Entrega_Modulo_ML.md
+entregaFinal/gen_docx.py
+Modelo_Definitivo_Entrevista_GTP.docx

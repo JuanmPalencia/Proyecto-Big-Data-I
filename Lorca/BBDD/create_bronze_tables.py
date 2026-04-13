@@ -8,6 +8,8 @@ Uso:
 """
 from pyspark.sql import SparkSession
 
+HDFS_BRONZE = "hdfs:///user/gtp/bronze"
+
 spark = (
     SparkSession.builder
     .appName("GTP_CreateBronzeTables")
@@ -16,7 +18,7 @@ spark = (
 )
 spark.sparkContext.setLogLevel("WARN")
 
-spark.sql("CREATE DATABASE IF NOT EXISTS gtp_bronze LOCATION 'hdfs:///user/gtp/bronze'")
+spark.sql(f"CREATE DATABASE IF NOT EXISTS gtp_bronze LOCATION '{HDFS_BRONZE}'")
 
 TABLES = [
     """CREATE TABLE IF NOT EXISTS gtp_bronze.bronze_modis_ndvi_raw (

@@ -11,7 +11,7 @@
 
 CREATE DATABASE IF NOT EXISTS gtp_bronze
   COMMENT 'Capa Bronze GTP: datos brutos de ingesta, append-only'
-  LOCATION 'hdfs:///user/gtp/bronze';
+    LOCATION 'hdfs:///user/gtp/bronze';
 
 USE gtp_bronze;
 
@@ -476,7 +476,7 @@ TBLPROPERTIES ('parquet.compression'='SNAPPY','transactional'='false','immutable
 -- Ingesta: tourism_extract.py
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS bronze_tourism_raw (
-    city STRING, country STRING, month INT,
+    city STRING, month INT,
     tourism_nights DOUBLE COMMENT 'Pernoctaciones mensuales en alojamiento turístico (Eurostat tour_occ_nim)',
     tourism_source STRING,
     _ingestion_date STRING, _source_system STRING COMMENT 'Eurostat_tourism', _file_name STRING
@@ -508,7 +508,7 @@ TBLPROPERTIES ('parquet.compression'='SNAPPY','transactional'='false','immutable
 -- Ingesta: eea_aq_extract.py
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS bronze_eea_aq_raw (
-    city STRING, country STRING, month INT,
+    city STRING, month INT,
     pm25_mean DOUBLE COMMENT 'PM2.5 medio anual (μg/m³), repetido mensualmente (Eurostat sdg_11_50)',
     pm10_mean DOUBLE COMMENT 'PM10 medio anual (μg/m³), repetido mensualmente',
     aq_source STRING COMMENT 'EUROSTAT_ANNUAL_REPEAT',

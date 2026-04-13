@@ -17,6 +17,7 @@ Ejecucion:
 import sys
 import argparse
 import warnings
+import os
 import numpy as np
 import pandas as pd
 from datetime import datetime, date, timezone
@@ -368,12 +369,12 @@ def main():
     """)
     if fk_rows:
         write_df_to_hdfs(pd.DataFrame(fk_rows),
-                         "hdfs:///user/gtp/gold/fact_kuznets/",
+                         os.environ.get("FACT_KUZNETS_HDFS_PATH", "hdfs:///user/gtp/gold/fact_kuznets/"),
                          partition_cols=["country"])
     mr_rows = pool.execute_query("SELECT * FROM model_results")
     if mr_rows:
         write_df_to_hdfs(pd.DataFrame(mr_rows),
-                         "hdfs:///user/gtp/gold/model_results/",
+                         os.environ.get("MODEL_RESULTS_HDFS_PATH", "hdfs:///user/gtp/gold/model_results/"),
                          partition_cols=["year"])
 
     # 5. Resumen

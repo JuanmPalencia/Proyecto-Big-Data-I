@@ -17,6 +17,7 @@ import sys
 import json
 import argparse
 import warnings
+import os
 import numpy as np
 from datetime import datetime, timezone
 from pathlib import Path
@@ -400,7 +401,7 @@ def main():
     dc_rows = pool.execute_query("SELECT * FROM dim_cluster WHERE is_current=1")
     if dc_rows:
         write_df_to_hdfs(pd.DataFrame(dc_rows),
-                         "hdfs:///user/gtp/silver/dim_cluster/",
+                         os.environ.get("DIM_CLUSTER_HDFS_PATH", "hdfs:///user/gtp/silver/dim_cluster/"),
                          partition_cols=["cluster_id"])
 
     print("\n" + "=" * 65)

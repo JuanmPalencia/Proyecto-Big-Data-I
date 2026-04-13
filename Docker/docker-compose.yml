@@ -34,9 +34,9 @@ x-pipeline-env: &pipeline-env
   environment:
     PG_HOST: mariadb
     PG_PORT: "3306"
-    PG_DB: bd_rvm_gtp
-    PG_USER: bd_rvm_gtp
-    PG_PASSWORD: Sol2026A
+    PG_DB: ${PG_DB}
+    PG_USER: ${PG_USER}
+    PG_PASSWORD: ${PG_PASSWORD}
     SPARK_MASTER: "local[4]"
 
 services:
@@ -163,9 +163,9 @@ services:
       - "3307:3306"   # Power BI / Tableau: localhost:3307 / bd_rvm_gtp
     environment:
       MARIADB_ROOT_PASSWORD: root_gtp_2026
-      MARIADB_DATABASE: bd_rvm_gtp
-      MARIADB_USER: bd_rvm_gtp
-      MARIADB_PASSWORD: Sol2026A
+      MARIADB_DATABASE: ${PG_DB}
+      MARIADB_USER: ${PG_USER}
+      MARIADB_PASSWORD: ${PG_PASSWORD}
     volumes:
       - mariadb_data:/var/lib/mysql
       - ./docker/init:/docker-entrypoint-initdb.d

@@ -1084,7 +1084,7 @@ def main():
 
     spark = get_spark()
     # Crear base de datos si no existe
-    spark.sql("CREATE DATABASE IF NOT EXISTS gtp_bronze LOCATION 'hdfs:///user/gtp/bronze'")
+    spark.sql(f"CREATE DATABASE IF NOT EXISTS gtp_bronze LOCATION '{HDFS_BASE}'")
 
     sources = list(INGESTORS.keys()) if args.source == "all" else [args.source]
     errors = []

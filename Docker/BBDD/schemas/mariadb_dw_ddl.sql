@@ -7,7 +7,7 @@
 -- Granularity: Mensual (2004–2024 = 252 meses)
 -- Dims SCD:    dim_company → Tipo 2 | dim_cluster → Tipo 2 | resto → Tipo 1
 -- Ejecución:
---   mysql -h 10.151.30.2 -P 3306 -u bd_rvm_gtp -pSol2026A bd_rvm_gtp < mariadb_dw_ddl.sql
+--   mysql -h <host> -P <port> -u <user> -p<password> <database> < mariadb_dw_ddl.sql
 -- =============================================================================
 
 USE bd_rvm_gtp;

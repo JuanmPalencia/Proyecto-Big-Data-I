@@ -5,10 +5,10 @@ from pathlib import Path
 # ============================================================
 # 0) ✅ AJUSTES PRINCIPALES (RUTAS Y POSTGRES)
 # ============================================================
-PROJECT_ROOT_HINT = Path(r"/home/223B3336juan/Big Data I/Proyecto-Big-Data-I/BBDD")
-CONFIG_PY_PATH    = Path(r"/home/223B3336juan/Big Data I/Proyecto-Big-Data-I/ETL/script/config.py")
+PROJECT_ROOT_HINT = Path(__file__).resolve().parent
+CONFIG_PY_PATH    = PROJECT_ROOT_HINT.parent / "ETL" / "script" / "config.py"
 
-KUZNETS_DIR       = Path(r"/home/223B3336juan/data/DatosProcesados")
+KUZNETS_DIR       = Path(os.environ.get("KUZNETS_DIR", str(PROJECT_ROOT_HINT.parent / "data" / "DatosProcesados")))
 KUZNETS_FILE      = KUZNETS_DIR / "Kuznets.csv"
 
 SPARK_SHUFFLE_PARTITIONS = "200"

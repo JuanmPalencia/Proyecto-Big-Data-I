@@ -12,7 +12,7 @@
 
 CREATE DATABASE IF NOT EXISTS gtp_gold
   COMMENT 'Capa Gold GTP: tablas analíticas finales, desnormalizadas, listas para consumo'
-  LOCATION 'hdfs:///user/gtp/gold';
+    LOCATION 'hdfs:///user/gtp/gold';
 
 USE gtp_gold;
 

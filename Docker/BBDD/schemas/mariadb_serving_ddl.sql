@@ -14,7 +14,7 @@
 -- Vistas: 5 (optimizadas para los visuales más comunes de Power BI)
 --
 -- Ejecución:
---   mysql -h 10.151.30.2 -P 3306 -u bd_rvm_gtp -pSol2026A bd_rvm_gtp < mariadb_serving_ddl.sql
+--   mysql -h <host> -P <port> -u <user> -p<password> <database> < mariadb_serving_ddl.sql
 -- =============================================================================
 
 USE bd_rvm_gtp;

@@ -15,6 +15,11 @@ venv/
 .idea/
 *.log
 
+# Secretos y datos locales
+.env
+Web/data/*.txt
+*.docx
+
 # Ignorar datos pesados o procesados
 data
 data/raw/

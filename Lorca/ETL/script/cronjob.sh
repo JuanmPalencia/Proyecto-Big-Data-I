@@ -2,10 +2,12 @@
 
 # --- CONFIGURACIÓN ---
 
-PROJECT_DIR="/home/223B3336juan"
-LOG_FILE="$PROJECT_DIR/cronjob_$(date +\%Y\%m\%d).log"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="${PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+LOG_DIR="${LOG_DIR:-$PROJECT_DIR/logs}"
+LOG_FILE="$LOG_DIR/cronjob_$(date +\%Y\%m\%d).log"
 
-mkdir -p "$PROJECT_DIR/logs"
+mkdir -p "$LOG_DIR"
 
 echo "========================================================" >> "$LOG_FILE"
 echo " INICIANDO ACTUALIZACIÓN MENSUAL GTP: $(date)" >> "$LOG_FILE"
