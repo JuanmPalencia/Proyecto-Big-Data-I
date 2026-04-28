@@ -181,10 +181,13 @@ def batch_upsert(pool, sql: str, rows: list, batch_size: int = 1000):
     total = len(rows)
     if total == 0:
         return
+    print(f"    [UPSERT] Iniciando carga de {total:,} filas (batch_size={batch_size})", flush=True)
     for i in range(0, total, batch_size):
         chunk = rows[i: i + batch_size]
         pool.execute_many(sql, chunk)
-    print(f"    {total:,} filas procesadas")
+        done = min(i + batch_size, total)
+        print(f"    [UPSERT] {done:,}/{total:,} filas", flush=True)
+    print(f"    [UPSERT] Completado: {total:,} filas procesadas", flush=True)
 
 
 def safe_float(v):
@@ -849,8 +852,10 @@ def build_fact_economic(spark, pool, city_sk_map: dict):
     # Generar meses 1-12 por ciudad-anio via interpolacion lineal
     gdp_pdf = gdp_pdf.sort_values(["city_code", "year"])
     monthly_rows = []
+    total_groups = gdp_pdf["city_code"].nunique()
+    print(f"  [INFO] Preparando filas mensuales para {total_groups} ciudades", flush=True)
 
-    for city_code, grp in gdp_pdf.groupby("city_code"):
+    for idx_group, (city_code, grp) in enumerate(gdp_pdf.groupby("city_code"), start=1):
         city_sk = city_sk_map.get(city_code)
         if city_sk is None:
             continue
@@ -959,6 +964,13 @@ def build_fact_economic(spark, pool, city_sk_map: dict):
                     SILVER_LOAD_DATE,
                 ))
 
+        if idx_group % 25 == 0 or idx_group == total_groups:
+            print(
+                f"  [INFO] Ciudades procesadas: {idx_group}/{total_groups} | "
+                f"filas acumuladas: {len(monthly_rows):,}",
+                flush=True,
+            )
+
     # Calcular gdp_growth_rate mensual como variacion respecto al mismo mes del anio anterior
     # Simplificacion: calculamos solo en el dataframe pandas antes de insertar
     import pandas as pd
@@ -976,6 +988,7 @@ def build_fact_economic(spark, pool, city_sk_map: dict):
         mdf.groupby(["city_sk", "month"])["gdp_pps_per_capita"]
         .pct_change() * 100
     ).round(4)
+    print(f"  [INFO] DataFrame fact_economic listo con {len(mdf):,} filas", flush=True)
 
     sql = """
         INSERT INTO fact_economic
@@ -1016,6 +1029,8 @@ def build_fact_economic(spark, pool, city_sk_map: dict):
             safe_float(r["ets_price_eur"]),
             SILVER_LOAD_DATE,
         ))
+
+    print(f"  [INFO] Iniciando upsert de {len(rows_out):,} filas en fact_economic", flush=True)
 
     batch_upsert(pool, sql, rows_out)
     print(f"  [FACT] fact_economic: {len(rows_out)} filas")
